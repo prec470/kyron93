@@ -630,7 +630,91 @@ input[type=file] { display: none; }
   0%  { background: var(--green-dark); }
   100%{ background: transparent; }
 }
-</style>
+
+/* ── MOBILE / RESPONSIVE ── */
+@media (max-width: 700px) {
+
+  /* Layout geral */
+  #app { grid-template-rows: 42px 34px 1fr 48px; }
+
+  /* Header: esconde stats secundários, mantém logo */
+  #header-stats .hstat:not(:first-child) { display: none; }
+  #logo span:last-child { display: none; }
+  #logo { font-size: 15px; }
+
+  /* Tabs: menores e sem badge */
+  .tab { padding: 5px 10px 4px; font-size: 11px; letter-spacing: 0.8px; }
+  .tab .badge { display: none; }
+
+  /* Toolbar: wrap e botões maiores (touch) */
+  .toolbar {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 8px;
+  }
+  .btn {
+    padding: 7px 12px;
+    font-size: 11px;
+    min-height: 36px;
+  }
+  .toolbar-sep { display: none; }
+
+  /* Tabela de pontos: scroll horizontal, colunas mínimas */
+  .table-wrap { -webkit-overflow-scrolling: touch; }
+  table { font-size: 11px; }
+  thead th { font-size: 9px; padding: 4px 5px; }
+  tbody td input, tbody td select { font-size: 11px; padding: 6px 5px; }
+  /* Esconde colunas menos críticas em tela pequena */
+  thead th:nth-child(7),  /* Data */
+  thead th:nth-child(8),  /* Hora */
+  thead th:nth-child(9),  /* Alt */
+  tbody td:nth-child(7),
+  tbody td:nth-child(8),
+  tbody td:nth-child(9) { display: none; }
+
+  /* Categorias: layout vertical */
+  .cat-header { display: none; }
+  .cat-row {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto auto;
+    gap: 6px;
+    padding: 8px;
+  }
+  .cat-row > *:nth-child(1) { grid-column: 1 / 3; }  /* Nome */
+  .cat-row > *:nth-child(2) { grid-column: 1 / 3; }  /* Ícone */
+  .cat-row > *:nth-child(3) { grid-column: 1 / 2; }  /* Regex */
+  .cat-row > *:nth-child(4) { grid-column: 2 / 3; justify-self: end; } /* Toggle */
+  .cat-row > *:nth-child(5) { grid-column: 1 / 3; } /* Botão remover */
+
+  /* Export: layout vertical (sem side-by-side) */
+  .export-layout { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .export-options { border-right: none; border-bottom: 1px solid var(--border); max-height: 45vh; }
+  .export-preview { max-height: 30vh; }
+
+  /* Modal: largura total */
+  .modal { min-width: unset; width: 94vw; max-width: 94vw; }
+  .modal-body { padding: 12px; }
+
+  /* Status bar: 2 linhas */
+  #statusbar {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 4px 10px;
+    height: auto;
+  }
+  #statusbar .status-msg { width: 100%; font-size: 10px; }
+  .status-item { font-size: 10px; }
+
+  /* Mapa: botões de overlay maiores */
+  .map-badge { font-size: 12px; padding: 8px 14px; }
+}
+
+@media (max-width: 400px) {
+  .tab { padding: 5px 7px 4px; font-size: 10px; }
+  #logo { font-size: 13px; }
+  /* Em telas muito pequenas, esconde também a coluna Imagem */
+  thead th:nth-child(10), tbody td:nth-child(10) { display: none; }
+}
 </head>
 <body>
 
@@ -998,16 +1082,17 @@ function addRow(data = {}) {
 
   points.push({
     id:       nextId++,
-    nome:     data.nome  || '',
-    lat:      data.lat   || '',
-    lon:      data.lon   || '',
+    nome:     data.nome    || '',
+    lat:      data.lat     || '',
+    lon:      data.lon     || '',
     cat:      catFinal,
     _autocat: autocatFlag,
-    decri:    data.decri || '',
-    data:     data.data  || '',
-    hora:     data.hora  || '',
-    alt:      data.alt   || '',
-    img:      data.img   || '',
+    decri:    data.decri   || '',
+    data:     data.data    || '',
+    hora:     data.hora    || '',
+    alt:      data.alt     || '',
+    azimute:  data.azimute || '',
+    img:      data.img     || '',
   });
   renderPointsTable();
   updateStats();
@@ -1142,11 +1227,55 @@ function updateMemDisplay() {
   document.getElementById('sb-imgs').textContent = count;
 }
 
-// Lê valor EXIF rational: objeto {numerator,denominator} ou número
+// Converte qualquer forma de valor EXIF rational para float:
+//   {numerator, denominator}  → padrão EXIF-JS câmeras
+//   "28/1"  ou  "236/100"     → Android/Samsung como string racional
+//   "28.87"                   → Android como decimal string
+//   28  ou  28.87             → número direto
 function exifFloat(v) {
-  if (typeof v === 'object' && v !== null && 'numerator' in v)
-    return v.numerator / v.denominator;
+  if (v === undefined || v === null) return 0;
+  // Objeto rational padrão
+  if (typeof v === 'object' && 'numerator' in v) {
+    return v.denominator !== 0 ? v.numerator / v.denominator : 0;
+  }
+  // Array (alguns firmwares retornam array de um elemento)
+  if (Array.isArray(v)) return exifFloat(v[0]);
+  // String
+  if (typeof v === 'string') {
+    const trimmed = v.trim();
+    // Formato "numerador/denominador"
+    if (trimmed.includes('/')) {
+      const [num, den] = trimmed.split('/').map(Number);
+      return den !== 0 ? num / den : 0;
+    }
+    return parseFloat(trimmed) || 0;
+  }
   return parseFloat(v) || 0;
+}
+
+// Converte GPS DMS para decimal cobrindo todos os formatos Android/iOS/câmera:
+//   dms: array de 3 valores (cada um pode ser qualquer formato acima)
+//   ref: string 'N'/'S'/'E'/'W'/'O' ou array com esse valor
+function dmsToDecEXIF(dms, ref) {
+  if (!dms || !dms.length) return NaN;
+
+  // Normaliza ref para string
+  let refStr = '';
+  if (Array.isArray(ref))       refStr = (ref[0] || '').toString().trim().toUpperCase();
+  else if (ref !== undefined)   refStr = ref.toString().trim().toUpperCase();
+
+  // Alguns firmwares Android entregam já o decimal no índice 0
+  // e os outros dois como 0 — detecta esse caso
+  const d = exifFloat(dms[0]);
+  const m = exifFloat(dms[1] !== undefined ? dms[1] : 0);
+  const s = exifFloat(dms[2] !== undefined ? dms[2] : 0);
+
+  if (isNaN(d)) return NaN;
+
+  let v = Math.abs(d) + m / 60 + s / 3600;
+  if (['S', 'W', 'O'].includes(refStr)) v = -v;
+
+  return parseFloat(v.toFixed(6));
 }
 
 // Extrai todos os dados EXIF necessários de uma imagem já carregada (EXIF.getData)
@@ -1193,10 +1322,41 @@ function extractEXIF(imgEl) {
     }
   } catch(_) {}
 
-  let latDec = '', lonDec = '';
+  // Azimute (direção da câmera) — GPSImgDirection
+  let azimute = null;
+  try {
+    const dir    = EXIF.getTag(imgEl, 'GPSImgDirection');
+    const dirRef = EXIF.getTag(imgEl, 'GPSImgDirectionRef'); // 'T' = True, 'M' = Magnético
+    if (dir !== undefined) {
+      azimute = exifFloat(dir);
+      // DJI também grava GimbalYaw no ImageDescription
+    }
+  } catch(_) {}
+
+  // DJI: tenta extrair GimbalYaw do ImageDescription
+  try {
+    const desc = EXIF.getTag(imgEl, 'ImageDescription') || '';
+    if (desc.includes('drone-dji') || desc.includes('GimbalYaw') || desc.includes('FlightYaw')) {
+      const mGimbal = desc.match(/GimbalYaw[Degree]*["\s:]*([+-]?\d+\.?\d*)/i);
+      const mFlight = desc.match(/FlightYaw[Degree]*["\s:]*([+-]?\d+\.?\d*)/i);
+      if (mGimbal) azimute = parseFloat(mGimbal[1]);
+      else if (mFlight && azimute === null) azimute = parseFloat(mFlight[1]);
+    }
+  } catch(_) {}
+
+  // Normaliza azimute para 0–360
+  if (azimute !== null) {
+    azimute = ((azimute % 360) + 360) % 360;
+    azimute = parseFloat(azimute.toFixed(1));
+  }
   if (lat && latR && lon && lonR) {
-    latDec = dmsToDecEXIF(lat, latR).toString();
-    lonDec = dmsToDecEXIF(lon, lonR).toString();
+    const la = dmsToDecEXIF(lat, latR);
+    const lo = dmsToDecEXIF(lon, lonR);
+    // Aceita somente se os valores resultantes forem números válidos e dentro dos limites
+    if (!isNaN(la) && !isNaN(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180) {
+      latDec = la.toString();
+      lonDec = lo.toString();
+    }
   }
 
   let data = '', hora = '';
@@ -1212,8 +1372,8 @@ function extractEXIF(imgEl) {
                  : '';
 
   return { latDec, lonDec, data, hora, make, model,
-           hasGPS: !!(lat && lon), orientation: ori,
-           altM, altRelDJI, altFinal };
+           hasGPS: !!(latDec && lonDec), orientation: ori,
+           altM, altRelDJI, altFinal, azimute };
 }
 
 // Gera thumbnail corrigindo orientação EXIF via canvas
@@ -1378,6 +1538,7 @@ function finishEXIFImport(results, found) {
           ? `<span style="color:var(--green)">✓ GPS</span><br>
              <small>${r.latDec}<br>${r.lonDec}
              ${r.altFinal ? `<br>alt: ${r.altFinal}m` : ''}
+             ${r.azimute !== null ? `<br>az: ${r.azimute}°` : ''}
              ${r.altRelDJI !== null ? '<br><span style="color:var(--amber)">DJI ✓</span>' : ''}</small>`
           : `<span style="color:var(--red)">✗ Sem GPS</span>`}
       </td>
@@ -1415,6 +1576,7 @@ function finishEXIFImport(results, found) {
           lat: r.latDec, lon: r.lonDec,
           data: r.data,  hora: r.hora,
           alt: r.altFinal,
+          azimute: r.azimute !== null ? String(r.azimute) : '',
           img: r.thumbURL,
         }));
         closeModal();
@@ -1427,6 +1589,7 @@ function finishEXIFImport(results, found) {
           lat: r.latDec, lon: r.lonDec,
           data: r.data,  hora: r.hora,
           alt: r.altFinal,
+          azimute: r.azimute !== null ? String(r.azimute) : '',
           img: r.thumbURL,
         }));
         closeModal();
@@ -1434,15 +1597,6 @@ function finishEXIFImport(results, found) {
     }},
     { label: 'Cancelar', cls: 'btn', cb: closeModal },
   ]);
-}
-
-function dmsToDecEXIF(dms, ref) {
-  const d = exifFloat(dms[0]);
-  const m = exifFloat(dms[1]);
-  const s = exifFloat(dms[2]);
-  let v = d + m / 60 + s / 3600;
-  if (['S', 'W', 'O'].includes((ref || '').toString().toUpperCase().trim())) v = -v;
-  return parseFloat(v.toFixed(6));
 }
 
 // ── CATEGORIES ───────────────────────────────────────────────────────────
@@ -1747,6 +1901,7 @@ function renderMap() {
       <span style="color:#6a8070">LAT:</span> ${la}<br>
       <span style="color:#6a8070">LON:</span> ${lo}<br>
       ${(p.alt && parseFloat(p.alt) !== 0) ? `<span style="color:#6a8070">ALT:</span> ${esc(p.alt)}m<br>` : ''}
+      ${(p.azimute && parseFloat(p.azimute) !== 0) ? `<span style="color:#6a8070">AZ:</span> ${esc(p.azimute)}°<br>` : ''}
       ${p.decri ? `<span style="color:#6a8070">DECRI:</span> ${esc(p.decri)}<br>` : ''}
       ${p.data  ? `<span style="color:#6a8070">DATA:</span> ${esc(p.data)}<br>` : ''}
       ${imgHTML}
@@ -1849,11 +2004,13 @@ function buildKML(imgPathMap, iconPathMap) {
     const imgHTML  = imgSrc ? `<img style="max-width:500px" src="${xmlEsc(imgSrc)}">` : '';
     const altHTML  = (p.alt && parseFloat(p.alt) !== 0)
       ? `<p><strong>Alt:</strong> ${xmlEsc(String(p.alt))} m</p>` : '';
+    const azHTML   = (p.azimute && parseFloat(p.azimute) !== 0)
+      ? `<p><strong>Azimute:</strong> ${xmlEsc(String(p.azimute))}°</p>` : '';
     const descri   = p.decri || '';
 
     return `  <Placemark>
     <name>${xmlEsc(p.nome || 'Ponto')}</name>
-    <description><![CDATA[<p>${descri}</p>${altHTML}${imgHTML}<br><sub><i>KYRON 93</i></sub>]]></description>
+    <description><![CDATA[<p>${descri}</p>${altHTML}${azHTML}${imgHTML}<br><sub><i>KYRON 93</i></sub>]]></description>
     ${styleXML}
     ${tsXML}
     <Point><coordinates>${lo},${la},${alt}</coordinates></Point>
