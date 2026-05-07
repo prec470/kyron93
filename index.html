@@ -940,7 +940,7 @@ function renderPointsTable() {
       <td><input value="${esc(p.data)}"  onchange="updatePoint(${p.id},'data',this.value)"  placeholder="AAAA-MM-DD"></td>
       <td><input value="${esc(p.hora)}"  onchange="updatePoint(${p.id},'hora',this.value)"  placeholder="HH:MM"></td>
       <td><input value="${esc(p.alt)}"   onchange="updatePoint(${p.id},'alt',this.value)"   placeholder="0" style="width:50px"></td>
-      <td><div style="display:flex;align-items:center;gap:4px">${p.img && (p.img.startsWith('blob:') || p.img.startsWith('http')) ? `<img src="${esc(p.img)}" style="width:32px;height:24px;object-fit:cover;border:1px solid var(--border2);flex-shrink:0" onerror="this.style.display='none'">` : ''}<input value="${esc(p.img)}" onchange="updatePoint(${p.id},'img',this.value)" placeholder="url ou nome.jpg" style="min-width:0;flex:1"></div></td>
+      <td><div style="display:flex;align-items:center;gap:4px">${(() => { const src = normalizeGDriveURL(p.img); return src && (src.startsWith('blob:') || src.startsWith('http')) ? `<img src="${esc(src)}" style="width:32px;height:24px;object-fit:cover;border:1px solid var(--border2);flex-shrink:0" onerror="this.style.display='none'">` : ''; })()}<input value="${esc(p.img)}" onchange="updatePoint(${p.id},'img',this.value)" placeholder="url ou nome.jpg" style="min-width:0;flex:1"></div></td>
       <td style="text-align:center;font-family:var(--mono);font-size:13px" class="${coordClass}">${coordIcon}</td>
     </tr>`;
   }).join('');
@@ -1267,12 +1267,40 @@ function resizeForExport(file, maxDim, orientation) {
   return makeThumbnail(file, maxDim, orientation);
 }
 
+// Converte links do Google Drive para URL direta de visualização compatível
+// com navegadores e Google Earth.
+// Formatos reconhecidos:
+//   /file/d/{ID}/view  →  /uc?export=view&id={ID}
+//   /open?id={ID}      →  /uc?export=view&id={ID}
+function normalizeGDriveURL(url) {
+  if (!url || typeof url !== 'string') return url;
+  // /file/d/ID/view ou /file/d/ID/edit ou /file/d/ID/preview
+  const m1 = url.match(/drive\.google\.com\/file\/d\/([^\/\?]+)/);
+  if (m1) return `https://drive.google.com/uc?export=view&id=${m1[1]}`;
+  // /open?id=ID
+  const m2 = url.match(/drive\.google\.com\/open\?id=([^&]+)/);
+  if (m2) return `https://drive.google.com/uc?export=view&id=${m2[1]}`;
+  return url;
+}
+
 function importEXIF(event) {
   const files = Array.from(event.target.files);
   if (!files.length) return;
-  status(`Processando ${files.length} imagem(ns)...`, '');
+
   let processed = 0, found = 0;
   const results = [];
+  const total   = files.length;
+
+  // Barra de progresso inline na status bar
+  function updateProgress() {
+    const pct = Math.round((processed / total) * 100);
+    status(
+      `Carregando imagens: ${processed}/${total} (${pct}%) — processando thumbnails...`,
+      ''
+    );
+    document.getElementById('sb-mem').parentElement.style.opacity = '0.5';
+  }
+  updateProgress();
 
   files.forEach(file => {
     const origUrl = URL.createObjectURL(file);
@@ -1288,19 +1316,16 @@ function importEXIF(event) {
         makeThumbnail(file, THUMB_DIM, exif.orientation).then(thumbBlob => {
           const thumbURL = URL.createObjectURL(thumbBlob);
           imgBlobStore[file.name] = thumbURL;
-          imgFileStore[thumbURL]  = file;          // guarda File original
+          imgFileStore[thumbURL]  = file;
           blobSizeStore[thumbURL] = thumbBlob.size;
           updateMemDisplay();
+          document.getElementById('sb-mem').parentElement.style.opacity = '1';
 
-          results.push({
-            file, thumbURL,
-            origSize: file.size, thumbSize: thumbBlob.size,
-            ...exif,
-          });
+          results.push({ file, thumbURL, origSize: file.size, thumbSize: thumbBlob.size, ...exif });
           processed++;
-          if (processed === files.length) finishEXIFImport(results, found);
+          updateProgress();
+          if (processed === total) finishEXIFImport(results, found);
         }).catch(() => {
-          // Fallback sem redimensionamento
           const thumbURL = URL.createObjectURL(file);
           imgBlobStore[file.name] = thumbURL;
           imgFileStore[thumbURL]  = file;
@@ -1308,7 +1333,8 @@ function importEXIF(event) {
           updateMemDisplay();
           results.push({ file, thumbURL, origSize: file.size, thumbSize: file.size, ...exif });
           processed++;
-          if (processed === files.length) finishEXIFImport(results, found);
+          updateProgress();
+          if (processed === total) finishEXIFImport(results, found);
         });
       });
     };
@@ -1319,7 +1345,8 @@ function importEXIF(event) {
         latDec:'', lonDec:'', data:'', hora:'', make:'', model:'',
         hasGPS: false, orientation: 1, altFinal: '' });
       processed++;
-      if (processed === files.length) finishEXIFImport(results, found);
+      updateProgress();
+      if (processed === total) finishEXIFImport(results, found);
     };
 
     imgEl.src = origUrl;
@@ -1693,23 +1720,19 @@ function renderMap() {
     });
     const imgHTML = p.img
       ? (() => {
-          // "Abrir original" cria um URL temporário do File original se disponível,
-          // caso contrário usa o próprio blob (que pode ser o thumb ou URL externa).
-          const origFile = imgFileStore[p.img];
-          const openHref = p.img; // thumb blob ou URL externa — abre em nova aba
-          // Nota: para arquivos locais, o href do <a> aponta para o thumb;
-          // o botão "ORIGINAL" cria um URL temporário do File completo.
+          const origFile      = imgFileStore[p.img];
+          const resolvedSrc   = normalizeGDriveURL(p.img);
           const btnOriginal = origFile
             ? `<button onclick="openOriginal('${p.img}')"
                 style="margin-top:4px;width:100%;background:var(--bg3);border:1px solid var(--border2);
                        color:var(--green);font-family:'Barlow Condensed',sans-serif;font-size:10px;
                        letter-spacing:1px;padding:3px;cursor:pointer">↗ ABRIR ORIGINAL</button>`
-            : `<a href="${esc(p.img)}" target="_blank"
+            : `<a href="${esc(resolvedSrc)}" target="_blank"
                 style="display:block;margin-top:4px;text-align:center;font-size:9px;
                        color:var(--green);letter-spacing:1px;font-family:'Barlow Condensed',sans-serif">
                 ↗ ABRIR IMAGEM</a>`;
           return `<div style="margin-top:6px;position:relative">
-            <img src="${esc(p.img)}"
+            <img src="${esc(resolvedSrc)}"
               style="width:100%;max-height:80px;object-fit:cover;border:1px solid #2a3330;display:block"
               onerror="this.parentElement.style.display='none'">
             <span style="position:absolute;bottom:3px;right:3px;background:rgba(0,0,0,.65);
@@ -1723,6 +1746,7 @@ function renderMap() {
       <span style="color:#6a8070">CAT:</span> ${esc(p.cat)}<br>
       <span style="color:#6a8070">LAT:</span> ${la}<br>
       <span style="color:#6a8070">LON:</span> ${lo}<br>
+      ${(p.alt && parseFloat(p.alt) !== 0) ? `<span style="color:#6a8070">ALT:</span> ${esc(p.alt)}m<br>` : ''}
       ${p.decri ? `<span style="color:#6a8070">DECRI:</span> ${esc(p.decri)}<br>` : ''}
       ${p.data  ? `<span style="color:#6a8070">DATA:</span> ${esc(p.data)}<br>` : ''}
       ${imgHTML}
@@ -1817,15 +1841,19 @@ function buildKML(imgPathMap, iconPathMap) {
       tsXML = `<TimeStamp><when>${xmlEsc(p.data)}${t}</when></TimeStamp>`;
     }
 
-    // Resolve caminho da imagem: usa mapa de substituição se disponível
+    // Resolve caminho da imagem: usa mapa de substituição se disponível,
+    // e normaliza links do Google Drive para formato compatível com GEarth.
     let imgSrc = p.img || '';
     if (imgSrc && imgPathMap[imgSrc]) imgSrc = imgPathMap[imgSrc];
-    const imgHTML = imgSrc ? `<img style="max-width:500px" src="${xmlEsc(imgSrc)}">` : '';
-    const descri  = p.decri || '';
+    imgSrc = normalizeGDriveURL(imgSrc);
+    const imgHTML  = imgSrc ? `<img style="max-width:500px" src="${xmlEsc(imgSrc)}">` : '';
+    const altHTML  = (p.alt && parseFloat(p.alt) !== 0)
+      ? `<p><strong>Alt:</strong> ${xmlEsc(String(p.alt))} m</p>` : '';
+    const descri   = p.decri || '';
 
     return `  <Placemark>
     <name>${xmlEsc(p.nome || 'Ponto')}</name>
-    <description><![CDATA[<p>${descri}</p>${imgHTML}<br><sub><i>KYRON 93</i></sub>]]></description>
+    <description><![CDATA[<p>${descri}</p>${altHTML}${imgHTML}<br><sub><i>KYRON 93</i></sub>]]></description>
     ${styleXML}
     ${tsXML}
     <Point><coordinates>${lo},${la},${alt}</coordinates></Point>
