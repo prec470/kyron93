@@ -1,0 +1,2335 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KYRON 93 — CSV › KML</title>
+
+<!-- Leaflet -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<!-- PapaParse -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<!-- EXIF-JS -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exif-js/2.3.0/exif.js"></script>
+<!-- JSZip -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<style>
+/* =====================================================================
+   KYRON 93 — Military/Industrial UI
+   Estética: tela tática, grid denso, tipo condensado, verde operacional
+   ===================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap');
+
+:root {
+  --bg0:        #0a0c0a;
+  --bg1:        #0f1210;
+  --bg2:        #141816;
+  --bg3:        #1c211e;
+  --bg4:        #242b26;
+  --border:     #2a3330;
+  --border2:    #3a4540;
+  --green:      #4aff6e;
+  --green-dim:  #2a9944;
+  --green-dark: #1a5530;
+  --amber:      #ffb83f;
+  --red:        #ff4a4a;
+  --text:       #c8d8cc;
+  --text-dim:   #6a8070;
+  --text-bright:#e8f4ec;
+  --mono:       'Share Tech Mono', monospace;
+  --ui:         'Barlow Condensed', sans-serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: var(--bg0);
+  color: var(--text);
+  font-family: var(--ui);
+  font-size: 14px;
+  overflow: hidden;
+}
+
+/* ── SCANLINE OVERLAY ── */
+body::before {
+  content: '';
+  position: fixed; inset: 0; z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg, transparent, transparent 2px,
+    rgba(0,0,0,.06) 2px, rgba(0,0,0,.06) 4px
+  );
+  pointer-events: none;
+}
+
+/* ── LAYOUT ── */
+#app {
+  display: grid;
+  grid-template-rows: 48px 36px 1fr 28px;
+  height: 100vh;
+}
+
+/* ── HEADER ── */
+#header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  background: var(--bg1);
+  border-bottom: 1px solid var(--green-dark);
+  box-shadow: 0 1px 12px rgba(74,255,110,.06);
+}
+
+#logo {
+  font-family: var(--mono);
+  font-size: 18px;
+  color: var(--green);
+  letter-spacing: 2px;
+  text-shadow: 0 0 12px rgba(74,255,110,.5);
+  white-space: nowrap;
+}
+
+#logo span { color: var(--text-dim); font-size: 11px; margin-left: 8px; letter-spacing: 1px; }
+
+#header-stats {
+  display: flex;
+  gap: 20px;
+  margin-left: auto;
+}
+
+.hstat {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hstat-val {
+  color: var(--green);
+  font-size: 13px;
+}
+
+/* ── TABS ── */
+#tabs {
+  display: flex;
+  background: var(--bg1);
+  border-bottom: 1px solid var(--border);
+  padding: 0 8px;
+  gap: 2px;
+  align-items: flex-end;
+}
+
+.tab {
+  padding: 6px 18px 5px;
+  font-family: var(--ui);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: transparent;
+  transition: color .15s, background .15s;
+  position: relative;
+  top: 1px;
+}
+
+.tab:hover { color: var(--text); background: var(--bg2); }
+
+.tab.active {
+  color: var(--green);
+  background: var(--bg2);
+  border-color: var(--border);
+  border-bottom-color: var(--bg2);
+}
+
+.tab .badge {
+  display: inline-block;
+  background: var(--green-dark);
+  color: var(--green);
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  margin-left: 6px;
+  font-family: var(--mono);
+}
+
+/* ── PANELS ── */
+#panels { overflow: hidden; position: relative; }
+
+.panel {
+  display: none;
+  height: 100%;
+  overflow: hidden;
+}
+
+.panel.active { display: flex; flex-direction: column; }
+
+/* ── TOOLBAR ── */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg1);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.toolbar-sep { width: 1px; height: 20px; background: var(--border2); margin: 0 4px; }
+
+/* ── BUTTONS ── */
+.btn {
+  font-family: var(--ui);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 5px 14px;
+  border: 1px solid var(--border2);
+  background: var(--bg3);
+  color: var(--text);
+  cursor: pointer;
+  transition: all .15s;
+  white-space: nowrap;
+}
+
+.btn:hover { background: var(--bg4); border-color: var(--green-dim); color: var(--text-bright); }
+
+.btn.primary {
+  background: var(--green-dark);
+  border-color: var(--green-dim);
+  color: var(--green);
+}
+
+.btn.primary:hover {
+  background: #1e6638;
+  box-shadow: 0 0 12px rgba(74,255,110,.2);
+}
+
+.btn.danger { border-color: #662020; color: var(--red); }
+.btn.danger:hover { background: #3a1010; }
+
+.btn.amber { border-color: #664420; color: var(--amber); }
+.btn.amber:hover { background: #3a2a10; }
+
+/* ── TABLE ── */
+.table-wrap {
+  flex: 1;
+  overflow: auto;
+  background: var(--bg0);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+thead tr {
+  background: var(--bg2);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+thead th {
+  padding: 6px 8px;
+  text-align: left;
+  font-family: var(--ui);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border2);
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+thead th:last-child { border-right: none; }
+
+tbody tr {
+  border-bottom: 1px solid var(--border);
+  transition: background .1s;
+}
+
+tbody tr:hover { background: var(--bg2); }
+tbody tr.selected { background: var(--green-dark) !important; }
+
+tbody td {
+  padding: 0;
+  border-right: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+tbody td:last-child { border-right: none; }
+
+tbody td input, tbody td select {
+  width: 100%;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  outline: none;
+}
+
+tbody td input:focus, tbody td select:focus {
+  background: var(--bg3);
+  outline: 1px solid var(--green-dim);
+}
+
+tbody td select { cursor: pointer; }
+tbody td select option { background: var(--bg3); }
+
+.row-num {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 4px 6px;
+  min-width: 36px;
+  user-select: none;
+  cursor: pointer;
+}
+
+.coord-ok { color: var(--green); }
+.coord-err { color: var(--red); }
+.coord-na  { color: var(--text-dim); }
+
+/* ── CATEGORIES PANEL ── */
+.cat-grid {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cat-row {
+  display: grid;
+  grid-template-columns: 160px 1fr 1fr 80px 42px;
+  gap: 6px;
+  align-items: center;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  transition: border-color .15s;
+}
+
+.cat-row:hover { border-color: var(--border2); }
+
+.cat-row input, .cat-row select {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 8px;
+  outline: none;
+  width: 100%;
+}
+
+.cat-row input:focus, .cat-row select:focus {
+  border-color: var(--green-dim);
+}
+
+.cat-row label {
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-family: var(--ui);
+}
+
+.icon-preview {
+  width: 24px; height: 24px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+}
+
+.cat-header {
+  display: grid;
+  grid-template-columns: 160px 1fr 1fr 80px 42px;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-family: var(--ui);
+  font-weight: 700;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* ── MAP PANEL ── */
+#map-container {
+  flex: 1;
+  position: relative;
+}
+
+#map { width: 100%; height: 100%; }
+
+#map-overlay {
+  position: absolute;
+  top: 10px; left: 10px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.map-badge {
+  background: rgba(10,12,10,.85);
+  border: 1px solid var(--border2);
+  padding: 6px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  backdrop-filter: blur(4px);
+}
+
+.map-badge span { color: var(--green); }
+
+/* ── EXPORT PANEL ── */
+.export-layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  overflow: hidden;
+}
+
+.export-options {
+  padding: 16px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.export-preview {
+  overflow: auto;
+  padding: 12px;
+  background: var(--bg0);
+}
+
+.export-preview pre {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: pre;
+  line-height: 1.5;
+}
+
+.export-preview pre .kml-tag   { color: #6ab0ff; }
+.export-preview pre .kml-attr  { color: var(--amber); }
+.export-preview pre .kml-val   { color: var(--green); }
+.export-preview pre .kml-cdata { color: var(--text-dim); }
+
+.option-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.option-group-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-family: var(--ui);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.option-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.option-row label {
+  font-size: 12px;
+  color: var(--text);
+  font-family: var(--ui);
+}
+
+.toggle {
+  position: relative;
+  width: 38px; height: 20px;
+  flex-shrink: 0;
+}
+
+.toggle input { display: none; }
+
+.toggle-slider {
+  position: absolute; inset: 0;
+  background: var(--bg4);
+  border: 1px solid var(--border2);
+  cursor: pointer;
+  transition: background .2s;
+}
+
+.toggle-slider::after {
+  content: '';
+  position: absolute;
+  width: 14px; height: 14px;
+  top: 2px; left: 2px;
+  background: var(--text-dim);
+  transition: transform .2s, background .2s;
+}
+
+.toggle input:checked + .toggle-slider { background: var(--green-dark); border-color: var(--green-dim); }
+.toggle input:checked + .toggle-slider::after { transform: translateX(18px); background: var(--green); }
+
+.field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-row label {
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-family: var(--ui);
+}
+
+.field-row input, .field-row select {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+  width: 100%;
+}
+
+.field-row input:focus, .field-row select:focus { border-color: var(--green-dim); }
+
+.export-btn-row {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── STATUS BAR ── */
+#statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 12px;
+  background: var(--bg1);
+  border-top: 1px solid var(--green-dark);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+#statusbar .status-msg { flex: 1; }
+#statusbar .status-msg.ok  { color: var(--green); }
+#statusbar .status-msg.err { color: var(--red); }
+#statusbar .status-msg.warn { color: var(--amber); }
+
+.status-item { display: flex; gap: 6px; }
+.status-item span { color: var(--text); }
+
+/* ── MODAL ── */
+#modal-overlay {
+  display: none;
+  position: fixed; inset: 0; z-index: 5000;
+  background: rgba(0,0,0,.7);
+  align-items: center;
+  justify-content: center;
+}
+
+#modal-overlay.open { display: flex; }
+
+.modal {
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  min-width: 420px;
+  max-width: 600px;
+  box-shadow: 0 0 40px rgba(0,0,0,.8);
+}
+
+.modal-header {
+  padding: 10px 16px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--green);
+  font-family: var(--ui);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-close { cursor: pointer; color: var(--text-dim); font-size: 18px; line-height: 1; }
+.modal-close:hover { color: var(--red); }
+
+.modal-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+
+.modal-footer {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* ── EMPTY STATE ── */
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-dim);
+}
+
+.empty-state .icon { font-size: 48px; opacity: .3; }
+.empty-state p { font-size: 13px; font-family: var(--ui); letter-spacing: 1px; }
+
+/* ── MISC ── */
+.hidden { display: none !important; }
+input[type=file] { display: none; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg1); }
+::-webkit-scrollbar-thumb { background: var(--border2); }
+::-webkit-scrollbar-thumb:hover { background: var(--green-dark); }
+
+.flash {
+  animation: flash-anim .4s ease;
+}
+@keyframes flash-anim {
+  0%  { background: var(--green-dark); }
+  100%{ background: transparent; }
+}
+
+/* ── MOBILE / RESPONSIVE ── */
+@media (max-width: 700px) {
+
+  /* Layout geral */
+  #app { grid-template-rows: 42px 34px 1fr 48px; }
+
+  /* Header: esconde stats secundários, mantém logo */
+  #header-stats .hstat:not(:first-child) { display: none; }
+  #logo span:last-child { display: none; }
+  #logo { font-size: 15px; }
+
+  /* Tabs: menores e sem badge */
+  .tab { padding: 5px 10px 4px; font-size: 11px; letter-spacing: 0.8px; }
+  .tab .badge { display: none; }
+
+  /* Toolbar: wrap e botões maiores (touch) */
+  .toolbar {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 8px;
+  }
+  .btn {
+    padding: 7px 12px;
+    font-size: 11px;
+    min-height: 36px;
+  }
+  .toolbar-sep { display: none; }
+
+  /* Tabela de pontos: scroll horizontal, colunas mínimas */
+  .table-wrap { -webkit-overflow-scrolling: touch; }
+  table { font-size: 11px; }
+  thead th { font-size: 9px; padding: 4px 5px; }
+  tbody td input, tbody td select { font-size: 11px; padding: 6px 5px; }
+  /* Esconde colunas menos críticas em tela pequena */
+  thead th:nth-child(7),  /* Data */
+  thead th:nth-child(8),  /* Hora */
+  thead th:nth-child(9),  /* Alt */
+  tbody td:nth-child(7),
+  tbody td:nth-child(8),
+  tbody td:nth-child(9) { display: none; }
+
+  /* Categorias: layout vertical */
+  .cat-header { display: none; }
+  .cat-row {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto auto;
+    gap: 6px;
+    padding: 8px;
+  }
+  .cat-row > *:nth-child(1) { grid-column: 1 / 3; }  /* Nome */
+  .cat-row > *:nth-child(2) { grid-column: 1 / 3; }  /* Ícone */
+  .cat-row > *:nth-child(3) { grid-column: 1 / 2; }  /* Regex */
+  .cat-row > *:nth-child(4) { grid-column: 2 / 3; justify-self: end; } /* Toggle */
+  .cat-row > *:nth-child(5) { grid-column: 1 / 3; } /* Botão remover */
+
+  /* Export: layout vertical (sem side-by-side) */
+  .export-layout { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .export-options { border-right: none; border-bottom: 1px solid var(--border); max-height: 45vh; }
+  .export-preview { max-height: 30vh; }
+
+  /* Modal: largura total */
+  .modal { min-width: unset; width: 94vw; max-width: 94vw; }
+  .modal-body { padding: 12px; }
+
+  /* Status bar: 2 linhas */
+  #statusbar {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 4px 10px;
+    height: auto;
+  }
+  #statusbar .status-msg { width: 100%; font-size: 10px; }
+  .status-item { font-size: 10px; }
+
+  /* Mapa: botões de overlay maiores */
+  .map-badge { font-size: 12px; padding: 8px 14px; }
+}
+
+@media (max-width: 400px) {
+  .tab { padding: 5px 7px 4px; font-size: 10px; }
+  #logo { font-size: 13px; }
+  /* Em telas muito pequenas, esconde também a coluna Imagem */
+  thead th:nth-child(10), tbody td:nth-child(10) { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ══ HEADER ══ -->
+  <header id="header">
+    <div id="logo">KYRON<span style="color:var(--green)">93</span><span>▸ CSV › KML</span></div>
+    <div id="header-stats">
+      <div class="hstat">PONTOS <span class="hstat-val" id="stat-pts">0</span></div>
+      <div class="hstat">CATS <span class="hstat-val" id="stat-cats">0</span></div>
+      <div class="hstat">VÁLIDOS <span class="hstat-val" id="stat-valid">0</span></div>
+    </div>
+  </header>
+
+  <!-- ══ TABS ══ -->
+  <nav id="tabs">
+    <button class="tab active" data-tab="pontos">Pontos <span class="badge" id="badge-pontos">0</span></button>
+    <button class="tab" data-tab="categorias">Categorias <span class="badge" id="badge-cats">0</span></button>
+    <button class="tab" data-tab="mapa">Mapa</button>
+    <button class="tab" data-tab="exportar">Exportar KML</button>
+  </nav>
+
+  <!-- ══ PANELS ══ -->
+  <div id="panels">
+
+    <!-- ── PONTOS ── -->
+    <div class="panel active" id="panel-pontos">
+      <div class="toolbar">
+        <button class="btn primary" onclick="addRow()">+ Linha</button>
+        <button class="btn" onclick="document.getElementById('csv-input').click()">↑ CSV</button>
+        <input type="file" id="csv-input" accept=".csv" onchange="importCSV(event)">
+        <button class="btn" onclick="document.getElementById('img-input').click()">↑ Imagens EXIF</button>
+        <input type="file" id="img-input" accept=".jpg,.jpeg" multiple onchange="importEXIF(event)">
+        <div class="toolbar-sep"></div>
+        <button class="btn danger" onclick="deleteSelected()">✕ Excluir Sel.</button>
+        <button class="btn danger" onclick="clearAll()">✕ Limpar Tudo</button>
+        <div class="toolbar-sep"></div>
+        <button class="btn amber" onclick="exportCSV()">↓ CSV</button>
+        <div class="toolbar-sep"></div>
+        <button class="btn" onclick="recatSemCategoria()" title="Aplica regex apenas nos pontos que estão em 'Sem Categoria'">⟳ Reaplicar Regex</button>
+        <button class="btn danger" onclick="recatForcar()" title="Sobrescreve a categoria de TODOS os pontos com base nas regex atuais">⟳ Forçar Recategorização</button>
+        <div style="margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--text-dim)" id="csv-filename"></div>
+      </div>
+      <div class="table-wrap">
+        <table id="points-table">
+          <thead>
+            <tr>
+              <th style="width:36px">#</th>
+              <th style="min-width:140px">Nome</th>
+              <th style="min-width:110px">Latitude</th>
+              <th style="min-width:110px">Longitude</th>
+              <th style="min-width:120px">Categoria</th>
+              <th style="min-width:180px">Descrição</th>
+              <th style="min-width:90px">Data</th>
+              <th style="min-width:70px">Hora</th>
+              <th style="min-width:50px">Alt (m)</th>
+              <th style="min-width:150px">Imagem / URL</th>
+              <th style="min-width:60px">Coord OK</th>
+            </tr>
+          </thead>
+          <tbody id="points-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── CATEGORIAS ── -->
+    <div class="panel" id="panel-categorias">
+      <div class="toolbar">
+        <button class="btn primary" onclick="addCat()">+ Categoria</button>
+        <div class="toolbar-sep"></div>
+        <button class="btn" onclick="document.getElementById('conf-input').click()">↑ Conf.csv</button>
+        <input type="file" id="conf-input" accept=".csv" onchange="importConf(event)">
+        <button class="btn amber" onclick="exportConf()">↓ Conf.csv</button>
+      </div>
+      <div class="cat-header">
+        <div>Nome</div>
+        <div>Ícone (URL ou arquivo)</div>
+        <div>Regex (autocategorização)</div>
+        <div>Ocultar nome</div>
+        <div></div>
+      </div>
+      <div class="cat-grid" id="cat-grid"></div>
+    </div>
+
+    <!-- ── MAPA ── -->
+    <div class="panel" id="panel-mapa">
+      <div class="toolbar">
+        <button class="btn" onclick="fitMap()">⊙ Ajustar</button>
+        <button class="btn" onclick="renderMap()">↺ Atualizar</button>
+        <div class="toolbar-sep"></div>
+        <label style="font-size:11px;color:var(--text-dim);font-family:var(--ui);letter-spacing:1px">BASE MAP</label>
+        <select id="basemap-sel" onchange="changeBasemap()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;padding:3px 6px">
+          <option value="osm">OpenStreetMap</option>
+          <option value="topo">Topo (OpenTopoMap)</option>
+          <option value="satellite">Satélite (ESRI)</option>
+        </select>
+      </div>
+      <div id="map-container">
+        <div id="map"></div>
+        <div id="map-overlay">
+          <div class="map-badge">PTS: <span id="map-stat-pts">0</span> | VÁLIDOS: <span id="map-stat-valid">0</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── EXPORTAR ── -->
+    <div class="panel" id="panel-exportar">
+      <div class="toolbar">
+        <button class="btn primary" onclick="generateKML()">⬇ KML simples</button>
+        <button class="btn primary" id="btn-zip" onclick="generateZIP()" style="border-color:#4ab8ff;color:#4ab8ff;background:var(--bg3)">⬇ ZIP (KML + fotos)</button>
+        <button class="btn" onclick="previewKML()">◎ Preview</button>
+        <div class="toolbar-sep"></div>
+        <span id="zip-img-count" style="font-family:var(--mono);font-size:10px;color:var(--text-dim)"></span>
+      </div>
+      <div class="export-layout">
+        <div class="export-options">
+
+          <div class="option-group">
+            <div class="option-group-title">Arquivo</div>
+            <div class="field-row">
+              <label>Nome do arquivo KML</label>
+              <input type="text" id="kml-filename" value="kyron93_export" placeholder="nome_sem_extensao">
+            </div>
+          </div>
+
+          <div class="option-group">
+            <div class="option-group-title">Opções de Saída</div>
+            <div class="option-row">
+              <label>Incluir timestamp nos placemarks</label>
+              <label class="toggle"><input type="checkbox" id="opt-timestamp" checked><span class="toggle-slider"></span></label>
+            </div>
+            <div class="option-row">
+              <label>Agrupar por categoria (Folders)</label>
+              <label class="toggle"><input type="checkbox" id="opt-folders" checked><span class="toggle-slider"></span></label>
+            </div>
+            <div class="option-row">
+              <label>Incluir estilo de ocultação de nome</label>
+              <label class="toggle"><input type="checkbox" id="opt-styles" checked><span class="toggle-slider"></span></label>
+            </div>
+            <div class="option-row">
+              <label>Incluir altitude</label>
+              <label class="toggle"><input type="checkbox" id="opt-alt" checked><span class="toggle-slider"></span></label>
+            </div>
+          </div>
+
+          <div class="option-group">
+            <div class="option-group-title">Fuso Horário Padrão</div>
+            <div class="field-row">
+              <label>Sufixo de fuso (ex: Z, -03:00)</label>
+              <input type="text" id="opt-tz" value="Z" placeholder="Z">
+            </div>
+          </div>
+
+          <div class="option-group">
+            <div class="option-group-title">Resumo</div>
+            <div id="export-summary" style="font-family:var(--mono);font-size:11px;color:var(--text-dim);line-height:1.8"></div>
+          </div>
+
+          <div class="export-btn-row">
+            <button class="btn primary" style="flex:1" onclick="generateKML()">⬇ KML simples</button>
+            <button class="btn" style="flex:1;border-color:#4ab8ff;color:#4ab8ff" onclick="generateZIP()">⬇ ZIP (KML + fotos)</button>
+          </div>
+        </div>
+
+        <div class="export-preview">
+          <pre id="kml-preview"><span style="color:var(--text-dim)">// Preview do KML aparecerá aqui após clicar em ◎ Preview</span></pre>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /panels -->
+
+  <!-- ══ STATUS BAR ══ -->
+  <div id="statusbar">
+    <div class="status-msg" id="status-msg">PRONTO</div>
+    <div class="status-item">LINHAS <span id="sb-rows">0</span></div>
+    <div class="status-item">COORD OK <span id="sb-ok">0</span></div>
+    <div class="status-item">SEM COORD <span id="sb-nok">0</span></div>
+    <div class="toolbar-sep" style="height:14px"></div>
+    <div class="status-item" id="sb-mem-wrap" title="Memória estimada ocupada por fotos e ícones carregados nesta sessão">
+      MEM <span id="sb-mem" style="color:var(--green)">0 B</span>
+    </div>
+    <div class="status-item" id="sb-imgs-wrap">
+      FOTOS <span id="sb-imgs">0</span>
+    </div>
+  </div>
+
+</div><!-- /app -->
+
+<!-- ══ MODAL ══ -->
+<div id="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <span id="modal-title">CONFIRMAÇÃO</span>
+      <span class="modal-close" onclick="closeModal()">✕</span>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer" id="modal-footer"></div>
+  </div>
+</div>
+
+<script>
+// =====================================================================
+// KYRON 93 — Application Logic
+// =====================================================================
+
+// ── STATE ──────────────────────────────────────────────────────────────
+let points = [];        // [{id, nome, lat, lon, cat, decri, data, hora, alt, img}]
+let categories = [      // [{nome, icone, regex, ocultar}]
+  { nome: 'Sem Categoria', icone: 'https://img.icons8.com/?size=100&id=21633&format=png&color=000000', regex: '', ocultar: true },
+  { nome: 'Casario',       icone: 'https://cdn-icons-png.freepik.com/256/4056/4056445.png',  regex: '\\b(fazenda|s[ií]tio|casa(rio)?)\\b', ocultar: true },
+];
+let selectedRows = new Set();
+let map = null;
+let mapLayer = null;
+let markers = [];
+let nextId = 1;
+
+// ── TAB NAVIGATION ─────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+
+    if (tab.dataset.tab === 'mapa') {
+      if (!map) initMap();
+      setTimeout(() => { renderMap(); if (map) map.invalidateSize(); }, 50);
+    }
+    if (tab.dataset.tab === 'exportar') updateExportSummary();
+  });
+});
+
+// ── COORDINATE PARSING ─────────────────────────────────────────────────
+function parseCoord(raw) {
+  if (!raw || raw.toString().trim() === '') return null;
+  raw = raw.toString().trim();
+
+  // Decimal direto
+  const dec = parseFloat(raw.replace(',', '.'));
+  if (!isNaN(dec) && raw.match(/^[+-]?\d+[.,]?\d*$/)) return dec;
+
+  // GMS: 28° 52' 23.6" S  ou  28 52 23.6 S
+  const gmsRe = /([+-]?\d+)[°ºo\s]+(\d+)[\'`\s]+(\d+\.?\d*)[\"\"\"]*\s*([NSEWOLnsewol]?)/;
+  const m = raw.match(gmsRe);
+  if (m) {
+    let g = parseFloat(m[1]), min = parseFloat(m[2]), sec = parseFloat(m[3]);
+    const dir = m[4].toUpperCase();
+    let v = Math.abs(g) + min / 60 + sec / 3600;
+    if (g < 0 || ['S','W','O'].includes(dir)) v = -v;
+    return parseFloat(v.toFixed(6));
+  }
+
+  // Só decimal com vírgula
+  const altDec = parseFloat(raw.replace(',', '.'));
+  if (!isNaN(altDec)) return altDec;
+
+  return null;
+}
+
+function splitCoord(raw) {
+  if (!raw) return [null, null];
+  raw = raw.toString().trim().replace(/,(\d)/g, '.$1');
+  // Split por ; ou / ou espaço entre dois grupos de coordenadas
+  const parts = raw.split(/[;\/]\s*|(?<=[NSEWOL\d])\s+(?=[+-]?\d)/i);
+  if (parts.length >= 2) return [parts[0].trim(), parts[parts.length - 1].trim()];
+  return [null, null];
+}
+
+function validateCoord(lat, lon) {
+  const la = parseCoord(lat), lo = parseCoord(lon);
+  if (la === null || lo === null) return false;
+  return la >= -90 && la <= 90 && lo >= -180 && lo <= 180;
+}
+
+// ── POINTS TABLE ────────────────────────────────────────────────────────
+function getCatOptions(selected) {
+  return categories.map(c =>
+    `<option value="${esc(c.nome)}" ${c.nome === selected ? 'selected' : ''}>${esc(c.nome)}</option>`
+  ).join('');
+}
+
+function renderPointsTable() {
+  const tbody = document.getElementById('points-body');
+  const valid = points.filter(p => validateCoord(p.lat, p.lon));
+
+  tbody.innerHTML = points.map((p, i) => {
+    const ok = validateCoord(p.lat, p.lon);
+    const coordClass = ok ? 'coord-ok' : (p.lat || p.lon ? 'coord-err' : 'coord-na');
+    const coordIcon  = ok ? '✓' : (p.lat || p.lon ? '✗' : '—');
+    const sel = selectedRows.has(p.id) ? 'selected' : '';
+    return `<tr class="${sel}" data-id="${p.id}">
+      <td class="row-num" onclick="toggleSelect(${p.id})">${i+1}</td>
+      <td><input value="${esc(p.nome)}"  onchange="updatePoint(${p.id},'nome',this.value)"  placeholder="—"></td>
+      <td><input value="${esc(p.lat)}"   onchange="updatePoint(${p.id},'lat',this.value)"   placeholder="ex: -28.5° ou 28°52'S" class="${ok?'':'coord-err'}"></td>
+      <td><input value="${esc(p.lon)}"   onchange="updatePoint(${p.id},'lon',this.value)"   placeholder="ex: -55.5" class="${ok?'':'coord-err'}"></td>
+      <td>
+        <div style="display:flex;align-items:center">
+          <select onchange="updatePoint(${p.id},'cat',this.value)" style="flex:1">${getCatOptions(p.cat)}</select>
+          <span title="Categoria atribuída automaticamente por regex. Será reavaliada ao editar a descrição."
+            style="font-family:var(--mono);font-size:9px;padding:0 4px;color:var(--green-dim);flex-shrink:0;opacity:${p._autocat ? 1 : 0};pointer-events:none">[A]</span>
+        </div>
+      </td>
+      <td><input value="${esc(p.decri)}" onchange="updatePoint(${p.id},'decri',this.value)" placeholder="—"></td>
+      <td><input value="${esc(p.data)}"  onchange="updatePoint(${p.id},'data',this.value)"  placeholder="AAAA-MM-DD"></td>
+      <td><input value="${esc(p.hora)}"  onchange="updatePoint(${p.id},'hora',this.value)"  placeholder="HH:MM"></td>
+      <td><input value="${esc(p.alt)}"   onchange="updatePoint(${p.id},'alt',this.value)"   placeholder="0" style="width:50px"></td>
+      <td><div style="display:flex;align-items:center;gap:4px">${(() => { const src = normalizeGDriveURL(p.img); return src && (src.startsWith('blob:') || src.startsWith('http')) ? `<img src="${esc(src)}" style="width:32px;height:24px;object-fit:cover;border:1px solid var(--border2);flex-shrink:0" onerror="this.style.display='none'">` : ''; })()}<input value="${esc(p.img)}" onchange="updatePoint(${p.id},'img',this.value)" placeholder="url ou nome.jpg" style="min-width:0;flex:1"></div></td>
+      <td style="text-align:center;font-family:var(--mono);font-size:13px" class="${coordClass}">${coordIcon}</td>
+    </tr>`;
+  }).join('');
+
+  // Badges / stats
+  document.getElementById('badge-pontos').textContent = points.length;
+  document.getElementById('stat-pts').textContent = points.length;
+  document.getElementById('stat-valid').textContent = valid.length;
+  document.getElementById('sb-rows').textContent = points.length;
+  document.getElementById('sb-ok').textContent = valid.length;
+  document.getElementById('sb-nok').textContent = points.length - valid.length;
+}
+
+function updatePoint(id, field, val) {
+  const p = points.find(p => p.id === id);
+  if (!p) return;
+
+  p[field] = val;
+
+  // Recategoriza automaticamente quando descrição ou nome mudam,
+  // desde que a categoria ainda seja 'Sem Categoria' ou tenha vindo de autocat.
+  if (field === 'decri' || field === 'nome') {
+    if (p.cat === 'Sem Categoria' || p._autocat) {
+      // Testa descrição primeiro; se vazia, testa nome
+      const texto = p.decri || p.nome || '';
+      const novaCat = autocat(texto);
+      if (novaCat !== p.cat) {
+        p.cat = novaCat;
+        p._autocat = (novaCat !== 'Sem Categoria');
+        flashAutocat(id);
+      }
+    }
+  }
+
+  // Edição manual da categoria trava o valor — autocat não sobrescreve mais.
+  if (field === 'cat') {
+    p._autocat = false;
+  }
+
+  renderPointsTable();
+  updateStats();
+}
+
+function addRow(data = {}) {
+  // Se nenhuma categoria foi fornecida explicitamente, tenta autocategorizar
+  // a partir da descrição ou do nome antes de criar a linha.
+  let catFinal   = data.cat || '';
+  let autocatFlag = data._autocat || false;
+
+  if (!catFinal) {
+    const texto = data.decri || data.nome || '';
+    catFinal = autocat(texto);
+    autocatFlag = (catFinal !== 'Sem Categoria');
+  }
+
+  points.push({
+    id:       nextId++,
+    nome:     data.nome    || '',
+    lat:      data.lat     || '',
+    lon:      data.lon     || '',
+    cat:      catFinal,
+    _autocat: autocatFlag,
+    decri:    data.decri   || '',
+    data:     data.data    || '',
+    hora:     data.hora    || '',
+    alt:      data.alt     || '',
+    azimute:  data.azimute || '',
+    img:      data.img     || '',
+  });
+  renderPointsTable();
+  updateStats();
+  status('Linha adicionada.');
+}
+
+function toggleSelect(id) {
+  if (selectedRows.has(id)) selectedRows.delete(id);
+  else selectedRows.add(id);
+  renderPointsTable();
+}
+
+function deleteSelected() {
+  if (!selectedRows.size) { status('Nenhuma linha selecionada.', 'warn'); return; }
+  points = points.filter(p => !selectedRows.has(p.id));
+  selectedRows.clear();
+  renderPointsTable(); updateStats();
+  status(`Linhas removidas.`);
+}
+
+function clearAll() {
+  if (!points.length) return;
+  modal('LIMPAR TUDO', '<p style="font-family:var(--ui);font-size:13px">Remover todos os <strong style="color:var(--green)">' + points.length + '</strong> pontos?</p>',
+    [{ label: 'Confirmar', cls: 'btn danger', cb: () => { points = []; selectedRows.clear(); renderPointsTable(); updateStats(); closeModal(); status('Tabela limpa.'); } },
+     { label: 'Cancelar', cls: 'btn', cb: closeModal }]);
+}
+
+// ── CSV IMPORT ───────────────────────────────────────────────────────────
+const HEADER_MAP = {
+  lat:   /\b(lat(itude)?s?)\b/i,
+  lon:   /\b(lon(g|gitude)?s?)\b/i,
+  coor:  /\b(coo?rd?(enada)?s?)\b/i,
+  nome:  /^(nomes?|t[íi]tulos?|alvos?)$/i,
+  cat:   /\b(cat(egoria)?s?|tipo)\b/i,
+  decri: /\b(des?cri[çc].*|eventos?|obs.*)\b/i,
+  data:  /\b(dat[ae]s?)\b/i,
+  hora:  /\b(hor[aá]s?)\b/i,
+  alt:   /\b(alt(itude|ura)?)\b/i,
+  img:   /\b(ima?g(em|ens)?|foto)\b/i,
+};
+
+function normalizeHeader(h) {
+  h = h.trim();
+  for (const [key, re] of Object.entries(HEADER_MAP)) {
+    if (re.test(h)) return key;
+  }
+  return h.toLowerCase();
+}
+
+function importCSV(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  document.getElementById('csv-filename').textContent = file.name;
+  Papa.parse(file, {
+    header: true, skipEmptyLines: true,
+    complete(results) {
+      const rawHeaders = results.meta.fields;
+      const normMap = {};
+      rawHeaders.forEach(h => normMap[h] = normalizeHeader(h));
+
+      let added = 0;
+      results.data.forEach(row => {
+        const norm = {};
+        for (const [orig, val] of Object.entries(row)) norm[normMap[orig]] = val;
+
+        let lat = '', lon = '';
+        if (norm.coor) {
+          const [la, lo] = splitCoord(norm.coor);
+          lat = la || ''; lon = lo || '';
+        }
+        if (!lat && norm.lat) lat = norm.lat;
+        if (!lon && norm.lon) lon = norm.lon;
+
+        // Autocat se necessário
+        let cat = norm.cat || '';
+        let _autocat = false;
+        if (!norm.cat && norm.decri) {
+          cat = autocat(norm.decri);
+          _autocat = (cat !== 'Sem Categoria');
+        }
+        if (!cat) cat = 'Sem Categoria';
+
+        addRow({ nome: norm.nome||'', lat, lon, cat, _autocat,
+                 decri: norm.decri||'', data: norm.data||'',
+                 hora: norm.hora||'', alt: norm.alt||'', img: norm.img||'' });
+        added++;
+      });
+      status(`CSV importado: ${added} linhas.`, 'ok');
+      event.target.value = '';
+    },
+    error(e) { status('Erro ao ler CSV: ' + e.message, 'err'); }
+  });
+}
+
+function exportCSV() {
+  if (!points.length) { status('Nenhum ponto para exportar.', 'warn'); return; }
+  const headers = ['Nome','Lat','Lon','Categoria','Descrição','Data','Hora','Alt','Imagem'];
+  const rows = points.map(p => [p.nome,p.lat,p.lon,p.cat,p.decri,p.data,p.hora,p.alt,p.img]);
+  const csv = [headers, ...rows].map(r => r.map(v => `"${(v||'').toString().replace(/"/g,'""')}"`).join(',')).join('\n');
+  download('kyron93_pontos.csv', csv, 'text/csv');
+  status('CSV exportado.', 'ok');
+}
+
+// ── EXIF IMPORT ──────────────────────────────────────────────────────────
+// imgBlobStore   : { fileName → thumbBlobURL }   (thumbnail 320px, leve)
+// imgFileStore   : { thumbBlobURL → File }        (arquivo original — sem blob pesado)
+// iconBlobStore  : { fileName → blobURL }
+// blobSizeStore  : { blobURL → bytes }
+const imgBlobStore  = {};
+const imgFileStore  = {};
+const iconBlobStore = {};
+const blobSizeStore = {};
+
+// ── MEMÓRIA ───────────────────────────────────────────────────────────────
+const THUMB_DIM = 320;   // px — thumbnail para preview/mapa/tabela
+const ZIP_DIM   = 1920;  // px — limite para fotos exportadas no ZIP
+
+function formatBytes(bytes) {
+  if (bytes < 1024)        return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function updateMemDisplay() {
+  const total = Object.values(blobSizeStore).reduce((a, b) => a + b, 0);
+  const count = Object.keys(imgBlobStore).length;
+  const el    = document.getElementById('sb-mem');
+  const warn  = total > 100 * 1024 * 1024;
+  const crit  = total > 300 * 1024 * 1024;
+  el.textContent = formatBytes(total);
+  el.style.color = crit ? 'var(--red)' : warn ? 'var(--amber)' : 'var(--green)';
+  document.getElementById('sb-imgs').textContent = count;
+}
+
+// Converte qualquer forma de valor EXIF rational para float:
+//   {numerator, denominator}  → padrão EXIF-JS câmeras
+//   "28/1"  ou  "236/100"     → Android/Samsung como string racional
+//   "28.87"                   → Android como decimal string
+//   28  ou  28.87             → número direto
+function exifFloat(v) {
+  if (v === undefined || v === null) return 0;
+  // Objeto rational padrão
+  if (typeof v === 'object' && 'numerator' in v) {
+    return v.denominator !== 0 ? v.numerator / v.denominator : 0;
+  }
+  // Array (alguns firmwares retornam array de um elemento)
+  if (Array.isArray(v)) return exifFloat(v[0]);
+  // String
+  if (typeof v === 'string') {
+    const trimmed = v.trim();
+    // Formato "numerador/denominador"
+    if (trimmed.includes('/')) {
+      const [num, den] = trimmed.split('/').map(Number);
+      return den !== 0 ? num / den : 0;
+    }
+    return parseFloat(trimmed) || 0;
+  }
+  return parseFloat(v) || 0;
+}
+
+// Converte GPS DMS para decimal cobrindo todos os formatos Android/iOS/câmera:
+//   dms: array de 3 valores (cada um pode ser qualquer formato acima)
+//   ref: string 'N'/'S'/'E'/'W'/'O' ou array com esse valor
+function dmsToDecEXIF(dms, ref) {
+  if (!dms || !dms.length) return NaN;
+
+  // Normaliza ref para string
+  let refStr = '';
+  if (Array.isArray(ref))       refStr = (ref[0] || '').toString().trim().toUpperCase();
+  else if (ref !== undefined)   refStr = ref.toString().trim().toUpperCase();
+
+  // Alguns firmwares Android entregam já o decimal no índice 0
+  // e os outros dois como 0 — detecta esse caso
+  const d = exifFloat(dms[0]);
+  const m = exifFloat(dms[1] !== undefined ? dms[1] : 0);
+  const s = exifFloat(dms[2] !== undefined ? dms[2] : 0);
+
+  if (isNaN(d)) return NaN;
+
+  let v = Math.abs(d) + m / 60 + s / 3600;
+  if (['S', 'W', 'O'].includes(refStr)) v = -v;
+
+  return parseFloat(v.toFixed(6));
+}
+
+// Extrai todos os dados EXIF necessários de uma imagem já carregada (EXIF.getData)
+function extractEXIF(imgEl) {
+  const lat  = EXIF.getTag(imgEl, 'GPSLatitude');
+  const latR = EXIF.getTag(imgEl, 'GPSLatitudeRef');
+  const lon  = EXIF.getTag(imgEl, 'GPSLongitude');
+  const lonR = EXIF.getTag(imgEl, 'GPSLongitudeRef');
+  const dt   = EXIF.getTag(imgEl, 'DateTimeOriginal') || '';
+  const make = EXIF.getTag(imgEl, 'Make') || '';
+  const model= EXIF.getTag(imgEl, 'Model') || '';
+  const ori  = EXIF.getTag(imgEl, 'Orientation') || 1;
+
+  // Altitude GPS padrão
+  let altM = null;
+  const gpsAlt    = EXIF.getTag(imgEl, 'GPSAltitude');
+  const gpsAltRef = EXIF.getTag(imgEl, 'GPSAltitudeRef');
+  if (gpsAlt !== undefined) {
+    altM = exifFloat(gpsAlt);
+    if (gpsAltRef === 1) altM = -altM; // abaixo do nível do mar
+  }
+
+  // Altitude DJI via MakerNote (XMP não acessível via EXIF-JS,
+  // mas o MakerNote DJI contém altitude relativa em ASCII)
+  // Fallback: tenta ler do UserComment / ImageDescription se contiver JSON-like
+  let altRelDJI = null;
+  try {
+    const uc = EXIF.getTag(imgEl, 'UserComment') || '';
+    const ucStr = typeof uc === 'string' ? uc : String.fromCharCode(...uc).replace(/\x00/g,'');
+    const mRel = ucStr.match(/rel[a-z]*alt[a-z]*[:\s"]*([+-]?\d+\.?\d*)/i);
+    if (mRel) altRelDJI = parseFloat(mRel[1]);
+    const mAbs = ucStr.match(/abs[a-z]*alt[a-z]*[:\s"]*([+-]?\d+\.?\d*)/i);
+    if (!altRelDJI && mAbs) altRelDJI = parseFloat(mAbs[1]);
+  } catch(_) {}
+
+  // DJI: tenta ImageDescription (alguns firmwares gravam JSON aqui)
+  try {
+    const desc = EXIF.getTag(imgEl, 'ImageDescription') || '';
+    if (desc.includes('drone-dji') || desc.includes('AbsoluteAltitude') || desc.includes('RelativeAltitude')) {
+      const mAbs = desc.match(/AbsoluteAltitude["\s:]*([+-]?\d+\.?\d*)/i);
+      const mRel = desc.match(/RelativeAltitude["\s:]*([+-]?\d+\.?\d*)/i);
+      if (mAbs) altM      = parseFloat(mAbs[1]);
+      if (mRel) altRelDJI = parseFloat(mRel[1]);
+    }
+  } catch(_) {}
+
+  // Azimute (direção da câmera) — GPSImgDirection
+  let azimute = null;
+  try {
+    const dir    = EXIF.getTag(imgEl, 'GPSImgDirection');
+    const dirRef = EXIF.getTag(imgEl, 'GPSImgDirectionRef'); // 'T' = True, 'M' = Magnético
+    if (dir !== undefined) {
+      azimute = exifFloat(dir);
+      // DJI também grava GimbalYaw no ImageDescription
+    }
+  } catch(_) {}
+
+  // DJI: tenta extrair GimbalYaw do ImageDescription
+  try {
+    const desc = EXIF.getTag(imgEl, 'ImageDescription') || '';
+    if (desc.includes('drone-dji') || desc.includes('GimbalYaw') || desc.includes('FlightYaw')) {
+      const mGimbal = desc.match(/GimbalYaw[Degree]*["\s:]*([+-]?\d+\.?\d*)/i);
+      const mFlight = desc.match(/FlightYaw[Degree]*["\s:]*([+-]?\d+\.?\d*)/i);
+      if (mGimbal) azimute = parseFloat(mGimbal[1]);
+      else if (mFlight && azimute === null) azimute = parseFloat(mFlight[1]);
+    }
+  } catch(_) {}
+
+  // Normaliza azimute para 0–360
+  if (azimute !== null) {
+    azimute = ((azimute % 360) + 360) % 360;
+    azimute = parseFloat(azimute.toFixed(1));
+  }
+  if (lat && latR && lon && lonR) {
+    const la = dmsToDecEXIF(lat, latR);
+    const lo = dmsToDecEXIF(lon, lonR);
+    // Aceita somente se os valores resultantes forem números válidos e dentro dos limites
+    if (!isNaN(la) && !isNaN(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180) {
+      latDec = la.toString();
+      lonDec = lo.toString();
+    }
+  }
+
+  let data = '', hora = '';
+  if (dt) {
+    const parts = dt.split(' ');
+    data = (parts[0] || '').replace(/:/g, '-');
+    hora = parts[1] || '';
+  }
+
+  // Altitude final: prefere GPS padrão; DJI relativa como complemento
+  const altFinal = altM !== null ? altM.toFixed(1)
+                 : altRelDJI !== null ? altRelDJI.toFixed(1)
+                 : '';
+
+  return { latDec, lonDec, data, hora, make, model,
+           hasGPS: !!(latDec && lonDec), orientation: ori,
+           altM, altRelDJI, altFinal, azimute };
+}
+
+// Gera thumbnail corrigindo orientação EXIF via canvas
+function makeThumbnail(file, maxDim, orientation) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const needRotate = orientation >= 5; // orientações 5-8 trocam W↔H
+      let sw = img.naturalWidth, sh = img.naturalHeight;
+      let dw, dh;
+      // Calcula dimensões do thumb respeitando a orientação
+      const long = Math.max(sw, sh), short = Math.min(sw, sh);
+      const scale = long > maxDim ? maxDim / long : 1;
+      if (needRotate) { dw = Math.round(sh * scale); dh = Math.round(sw * scale); }
+      else            { dw = Math.round(sw * scale); dh = Math.round(sh * scale); }
+
+      const canvas = document.createElement('canvas');
+      canvas.width  = dw;
+      canvas.height = dh;
+      const ctx = canvas.getContext('2d');
+
+      // Aplica transformação de orientação EXIF
+      ctx.save();
+      switch (orientation) {
+        case 2: ctx.transform(-1, 0, 0,  1, dw, 0);  break;
+        case 3: ctx.transform(-1, 0, 0, -1, dw, dh); break;
+        case 4: ctx.transform( 1, 0, 0, -1, 0,  dh); break;
+        case 5: ctx.transform( 0, 1, 1,  0,  0,  0); break;
+        case 6: ctx.transform( 0, 1,-1,  0, dh,  0); break;
+        case 7: ctx.transform( 0,-1,-1,  0, dh, dw); break;
+        case 8: ctx.transform( 0,-1, 1,  0,  0, dw); break;
+        default: break;
+      }
+      ctx.drawImage(img, 0, 0, needRotate ? dh : dw, needRotate ? dw : dh);
+      ctx.restore();
+
+      canvas.toBlob(blob => {
+        if (!blob) { reject(new Error('canvas.toBlob falhou')); return; }
+        resolve(blob);
+      }, 'image/jpeg', 0.80);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('load error')); };
+    img.src = url;
+  });
+}
+
+// Redimensiona (corrigindo orientação) para exportação no ZIP
+function resizeForExport(file, maxDim, orientation) {
+  return makeThumbnail(file, maxDim, orientation);
+}
+
+// Converte links do Google Drive para URL direta de visualização compatível
+// com navegadores e Google Earth.
+// Formatos reconhecidos:
+//   /file/d/{ID}/view  →  /uc?export=view&id={ID}
+//   /open?id={ID}      →  /uc?export=view&id={ID}
+function normalizeGDriveURL(url) {
+  if (!url || typeof url !== 'string') return url;
+  // /file/d/ID/view ou /file/d/ID/edit ou /file/d/ID/preview
+  const m1 = url.match(/drive\.google\.com\/file\/d\/([^\/\?]+)/);
+  if (m1) return `https://drive.google.com/uc?export=view&id=${m1[1]}`;
+  // /open?id=ID
+  const m2 = url.match(/drive\.google\.com\/open\?id=([^&]+)/);
+  if (m2) return `https://drive.google.com/uc?export=view&id=${m2[1]}`;
+  return url;
+}
+
+function importEXIF(event) {
+  const files = Array.from(event.target.files);
+  if (!files.length) return;
+
+  let processed = 0, found = 0;
+  const results = [];
+  const total   = files.length;
+
+  // Barra de progresso inline na status bar
+  function updateProgress() {
+    const pct = Math.round((processed / total) * 100);
+    status(
+      `Carregando imagens: ${processed}/${total} (${pct}%) — processando thumbnails...`,
+      ''
+    );
+    document.getElementById('sb-mem').parentElement.style.opacity = '0.5';
+  }
+  updateProgress();
+
+  files.forEach(file => {
+    const origUrl = URL.createObjectURL(file);
+    const imgEl   = new Image();
+
+    imgEl.onload = function() {
+      EXIF.getData(imgEl, function() {
+        URL.revokeObjectURL(origUrl);
+        const exif = extractEXIF(this);
+        if (exif.hasGPS) found++;
+
+        // Gera somente o thumbnail leve para uso em memória
+        makeThumbnail(file, THUMB_DIM, exif.orientation).then(thumbBlob => {
+          const thumbURL = URL.createObjectURL(thumbBlob);
+          imgBlobStore[file.name] = thumbURL;
+          imgFileStore[thumbURL]  = file;
+          blobSizeStore[thumbURL] = thumbBlob.size;
+          updateMemDisplay();
+          document.getElementById('sb-mem').parentElement.style.opacity = '1';
+
+          results.push({ file, thumbURL, origSize: file.size, thumbSize: thumbBlob.size, ...exif });
+          processed++;
+          updateProgress();
+          if (processed === total) finishEXIFImport(results, found);
+        }).catch(() => {
+          const thumbURL = URL.createObjectURL(file);
+          imgBlobStore[file.name] = thumbURL;
+          imgFileStore[thumbURL]  = file;
+          blobSizeStore[thumbURL] = file.size;
+          updateMemDisplay();
+          results.push({ file, thumbURL, origSize: file.size, thumbSize: file.size, ...exif });
+          processed++;
+          updateProgress();
+          if (processed === total) finishEXIFImport(results, found);
+        });
+      });
+    };
+
+    imgEl.onerror = () => {
+      URL.revokeObjectURL(origUrl);
+      results.push({ file, thumbURL: '', origSize: file.size, thumbSize: 0,
+        latDec:'', lonDec:'', data:'', hora:'', make:'', model:'',
+        hasGPS: false, orientation: 1, altFinal: '' });
+      processed++;
+      updateProgress();
+      if (processed === total) finishEXIFImport(results, found);
+    };
+
+    imgEl.src = origUrl;
+  });
+  event.target.value = '';
+}
+
+function finishEXIFImport(results, found) {
+  const totalOrig  = results.reduce((a, r) => a + r.origSize, 0);
+  const totalThumb = results.reduce((a, r) => a + r.thumbSize, 0);
+
+  const rows = results.map(r => `
+    <tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:6px">
+        ${r.thumbURL
+          ? `<img src="${r.thumbURL}" style="width:56px;height:42px;object-fit:cover;border:1px solid var(--border2)">`
+          : '<span style="color:var(--text-dim);font-size:10px">ERR</span>'}
+      </td>
+      <td style="padding:6px;font-family:var(--mono);font-size:11px">
+        ${esc(r.file.name)}<br>
+        <span style="color:var(--text-dim)">
+          orig: ${formatBytes(r.origSize)} →
+          thumb: <span style="color:var(--green)">${formatBytes(r.thumbSize)}</span>
+          ${r.make ? ' · ' + esc(r.make) + ' ' + esc(r.model) : ''}
+        </span>
+      </td>
+      <td style="padding:6px;font-family:var(--mono);font-size:11px;text-align:center">
+        ${r.hasGPS
+          ? `<span style="color:var(--green)">✓ GPS</span><br>
+             <small>${r.latDec}<br>${r.lonDec}
+             ${r.altFinal ? `<br>alt: ${r.altFinal}m` : ''}
+             ${r.azimute !== null ? `<br>az: ${r.azimute}°` : ''}
+             ${r.altRelDJI !== null ? '<br><span style="color:var(--amber)">DJI ✓</span>' : ''}</small>`
+          : `<span style="color:var(--red)">✗ Sem GPS</span>`}
+      </td>
+      <td style="padding:6px;font-family:var(--mono);font-size:11px">
+        ${r.data ? esc(r.data) + '<br>' + esc(r.hora) : '<span style="color:var(--text-dim)">—</span>'}
+      </td>
+    </tr>`).join('');
+
+  const body = `
+    <p style="font-family:var(--ui);font-size:12px;color:var(--text-dim);margin-bottom:10px;letter-spacing:1px">
+      ${results.length} IMAGEM(NS) · <span style="color:var(--green)">${found} COM GPS</span> · ${results.length - found} SEM GPS<br>
+      Thumbnails: <span style="color:var(--amber)">${formatBytes(totalOrig)}</span>
+      → <span style="color:var(--green)">${formatBytes(totalThumb)}</span>
+      (economia de ${Math.round((1 - totalThumb / totalOrig) * 100)}%)
+    </p>
+    <div style="max-height:300px;overflow-y:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-dim);font-family:var(--ui)">
+          <th style="padding:4px 6px;text-align:left">Preview</th>
+          <th style="padding:4px 6px;text-align:left">Arquivo / Tamanho</th>
+          <th style="padding:4px 6px;text-align:center">GPS / Alt</th>
+          <th style="padding:4px 6px;text-align:left">Data/Hora</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p style="font-family:var(--ui);font-size:11px;color:var(--text-dim);margin-top:10px">
+      Thumbnails (${THUMB_DIM}px) em memória para preview. Originais referenciados para exportação ZIP (${ZIP_DIM}px, rotação corrigida).
+    </p>`;
+
+  modal('IMAGENS IMPORTADAS', body, [
+    { label: 'Adicionar Todas', cls: 'btn primary', cb: () => {
+        results.forEach(r => addRow({
+          nome: r.file.name.replace(/\.[^.]+$/, ''),
+          lat: r.latDec, lon: r.lonDec,
+          data: r.data,  hora: r.hora,
+          alt: r.altFinal,
+          azimute: r.azimute !== null ? String(r.azimute) : '',
+          img: r.thumbURL,
+        }));
+        closeModal();
+        status(`${results.length} imagem(ns) adicionada(s); ${found} com GPS.`, found ? 'ok' : 'warn');
+    }},
+    { label: 'Apenas com GPS', cls: 'btn', cb: () => {
+        const comGPS = results.filter(r => r.hasGPS);
+        comGPS.forEach(r => addRow({
+          nome: r.file.name.replace(/\.[^.]+$/, ''),
+          lat: r.latDec, lon: r.lonDec,
+          data: r.data,  hora: r.hora,
+          alt: r.altFinal,
+          azimute: r.azimute !== null ? String(r.azimute) : '',
+          img: r.thumbURL,
+        }));
+        closeModal();
+        status(`${comGPS.length} imagem(ns) com GPS adicionada(s).`, comGPS.length ? 'ok' : 'warn');
+    }},
+    { label: 'Cancelar', cls: 'btn', cb: closeModal },
+  ]);
+}
+
+// ── CATEGORIES ───────────────────────────────────────────────────────────
+function renderCats() {
+  const grid = document.getElementById('cat-grid');
+  grid.innerHTML = categories.map((c, i) => {
+    const isBlob  = c.icone && c.icone.startsWith('blob:');
+    const iconName = isBlob
+      ? (Object.keys(iconBlobStore).find(k => iconBlobStore[k] === c.icone) || 'ícone local')
+      : '';
+    return `
+    <div class="cat-row">
+      <input value="${esc(c.nome)}" placeholder="Nome da categoria"
+        onchange="updateCat(${i},'nome',this.value)">
+      <div style="display:flex;gap:6px;align-items:center">
+        <img class="icon-preview" id="icon-prev-${i}"
+          src="${esc(c.icone)}" onerror="this.src=''" alt=""
+          title="${isBlob ? esc(iconName) : esc(c.icone)}">
+        <div style="flex:1;display:flex;flex-direction:column;gap:3px">
+          <input value="${esc(c.icone)}" placeholder="https://... ou selecione arquivo"
+            onchange="updateCat(${i},'icone',this.value);document.getElementById('icon-prev-${i}').src=this.value"
+            style="width:100%"
+            ${isBlob ? 'readonly title="Ícone local carregado — use o botão ↑ para trocar"' : ''}>
+          ${isBlob
+            ? `<span style="font-family:var(--mono);font-size:9px;color:var(--green-dim)">${esc(iconName)}</span>`
+            : ''}
+        </div>
+        <button class="btn" style="padding:3px 8px;white-space:nowrap"
+          onclick="document.getElementById('icon-file-${i}').click()"
+          title="Carregar ícone de arquivo local">↑</button>
+        <input type="file" id="icon-file-${i}" accept="image/*"
+          onchange="loadIconFile(event,${i})" style="display:none">
+      </div>
+      <input value="${esc(c.regex)}" placeholder="regex opcional"
+        onchange="updateCat(${i},'regex',this.value)"
+        style="font-family:var(--mono)">
+      <div style="display:flex;align-items:center;justify-content:center">
+        <label class="toggle">
+          <input type="checkbox" ${c.ocultar ? 'checked' : ''} onchange="updateCat(${i},'ocultar',this.checked)">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <button class="btn danger" onclick="deleteCat(${i})" ${i===0?'disabled':''} style="${i===0?'opacity:.3':''}" title="Remover">✕</button>
+    </div>`;
+  }).join('');
+
+  document.getElementById('badge-cats').textContent = categories.length;
+  document.getElementById('stat-cats').textContent = categories.length;
+}
+
+function updateCat(i, field, val) {
+  categories[i][field] = val;
+  renderCats();
+  renderPointsTable(); // atualiza selects de categoria
+}
+
+function loadIconFile(event, catIndex) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const old = categories[catIndex].icone;
+  if (old && old.startsWith('blob:')) {
+    delete blobSizeStore[old];
+    URL.revokeObjectURL(old);
+    updateMemDisplay();
+  }
+  const blobURL = URL.createObjectURL(file);
+  iconBlobStore[file.name] = blobURL;
+  blobSizeStore[blobURL]   = file.size;
+  categories[catIndex].icone = blobURL;
+  updateMemDisplay();
+  renderCats();
+  status(`Ícone '${file.name}' carregado para '${categories[catIndex].nome}'.`, 'ok');
+  event.target.value = '';
+}
+
+function addCat() {
+  categories.push({ nome: 'Nova Categoria', icone: 'https://cdn-icons-png.flaticon.com/512/5999/5999673.png', regex: '', ocultar: true });
+  renderCats();
+  status('Categoria adicionada.');
+}
+
+function deleteCat(i) {
+  if (i === 0) return;
+  const nome = categories[i].nome;
+  points.forEach(p => { if (p.cat === nome) p.cat = 'Sem Categoria'; });
+  categories.splice(i, 1);
+  renderCats(); renderPointsTable();
+  status(`Categoria '${nome}' removida.`);
+}
+
+function importConf(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  Papa.parse(file, {
+    header: true, skipEmptyLines: true,
+    complete(results) {
+      const newCats = results.data.map(r => ({
+        nome:    r['Cat'] || r['cat'] || '',
+        icone:   r['Icone'] || r['icone'] || '',
+        regex:   r['Regex'] || r['regex'] || '',
+        ocultar: (r['Ocultar']||r['ocultar']||'true').toLowerCase() === 'true',
+      })).filter(c => c.nome);
+      categories = [categories[0], ...newCats];
+      renderCats(); renderPointsTable();
+      status(`Conf.csv importado: ${newCats.length} categorias.`, 'ok');
+      event.target.value = '';
+    }
+  });
+}
+
+function exportConf() {
+  const header = 'Cat,Icone,Regex,Ocultar\n';
+  const rows = categories.slice(1).map(c =>
+    [c.nome, c.icone, c.regex, c.ocultar].map(v => `"${(v||'').toString().replace(/"/g,'""')}"`).join(',')
+  ).join('\n');
+  download('Conf.csv', header + rows, 'text/csv');
+  status('Conf.csv exportado.', 'ok');
+}
+
+// ── AUTOCATEGORIZAÇÃO ────────────────────────────────────────────────────
+function autocat(text) {
+  if (!text) return 'Sem Categoria';
+  for (const c of categories) {
+    if (!c.regex) continue;
+    try {
+      // Remove flags inline no estilo Python/PCRE (ex: (?i), (?m)) — inválidas em JS.
+      // A flag 'i' é sempre aplicada pelo construtor do RegExp.
+      const pattern = c.regex.replace(/^\(\?[a-z]+\)/i, '');
+      if (new RegExp(pattern, 'i').test(text)) return c.nome;
+    } catch(e) {}
+  }
+  return 'Sem Categoria';
+}
+
+// ── RECATEGORIZAÇÃO ──────────────────────────────────────────────────────
+
+// Reaplicar: apenas pontos em 'Sem Categoria'
+function recatSemCategoria() {
+  if (!points.length) { status('Nenhum ponto carregado.', 'warn'); return; }
+  let alterados = 0;
+  points.forEach(p => {
+    if (p.cat !== 'Sem Categoria') return;
+    const nova = autocat(p.decri);
+    if (nova !== 'Sem Categoria') {
+      p.cat = nova;
+      p._autocat = true;
+      alterados++;
+    }
+  });
+  renderPointsTable();
+  updateStats();
+  if (alterados > 0) {
+    status(`Regex reaplicada: ${alterados} ponto(s) recategorizado(s).`, 'ok');
+  } else {
+    status('Nenhum ponto em "Sem Categoria" correspondeu às regex.', 'warn');
+  }
+}
+
+// Forçar: sobrescreve TODOS os pontos, independente da categoria atual
+function recatForcar() {
+  if (!points.length) { status('Nenhum ponto carregado.', 'warn'); return; }
+
+  // Preview do impacto antes de confirmar
+  const preview = points.map(p => {
+    const nova = autocat(p.decri);
+    return { p, nova, muda: nova !== p.cat };
+  });
+  const totalMuda = preview.filter(r => r.muda).length;
+
+  const linhas = preview.filter(r => r.muda).slice(0, 8).map(r =>
+    `<tr>
+      <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${esc(r.p.nome || '(sem nome)')}</td>
+      <td style="padding:4px 8px;font-family:var(--mono);font-size:11px;color:var(--red)">${esc(r.p.cat)}</td>
+      <td style="padding:4px 8px;font-size:14px;color:var(--text-dim)">→</td>
+      <td style="padding:4px 8px;font-family:var(--mono);font-size:11px;color:var(--green)">${esc(r.nova)}</td>
+    </tr>`
+  ).join('');
+  const mais = totalMuda > 8
+    ? `<tr><td colspan="4" style="padding:4px 8px;font-size:11px;color:var(--text-dim)">… e mais ${totalMuda - 8} ponto(s)</td></tr>`
+    : '';
+
+  const bodyHTML = `
+    <p style="font-family:var(--ui);font-size:13px;margin-bottom:10px">
+      <strong style="color:var(--amber)">${totalMuda}</strong> de ${points.length} ponto(s) terão a categoria alterada.
+      ${totalMuda === 0 ? '<br><span style="color:var(--text-dim)">Nenhuma alteração necessária.</span>' : ''}
+    </p>
+    ${totalMuda > 0 ? `
+    <div style="max-height:240px;overflow-y:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-dim);font-family:var(--ui)">
+          <th style="padding:4px 8px;text-align:left">Ponto</th>
+          <th style="padding:4px 8px;text-align:left">Atual</th>
+          <th></th>
+          <th style="padding:4px 8px;text-align:left">Nova</th>
+        </tr></thead>
+        <tbody>${linhas}${mais}</tbody>
+      </table>
+    </div>
+    <p style="font-family:var(--ui);font-size:11px;color:var(--text-dim);margin-top:8px">
+      Categorias atribuídas manualmente também serão sobrescritas.
+    </p>` : ''}`;
+
+  modal('FORÇAR RECATEGORIZAÇÃO', bodyHTML, [
+    {
+      label: totalMuda > 0 ? 'Confirmar' : 'OK',
+      cls: totalMuda > 0 ? 'btn danger' : 'btn',
+      cb: () => {
+        if (totalMuda > 0) {
+          preview.forEach(({ p, nova }) => {
+            p.cat = nova;
+            p._autocat = (nova !== 'Sem Categoria');
+          });
+          renderPointsTable();
+          updateStats();
+          status(`Recategorização forçada: ${totalMuda} ponto(s) alterado(s).`, 'ok');
+        }
+        closeModal();
+      }
+    },
+    { label: 'Cancelar', cls: 'btn', cb: closeModal },
+  ]);
+}
+
+// Pisca brevemente a linha recategorizada automaticamente
+function flashAutocat(id) {
+  // Executa após o próximo render
+  requestAnimationFrame(() => {
+    const row = document.querySelector(`tr[data-id="${id}"]`);
+    if (row) {
+      row.style.transition = 'background .05s';
+      row.style.background = 'var(--green-dark)';
+      setTimeout(() => { row.style.background = ''; row.style.transition = ''; }, 600);
+    }
+  });
+}
+
+// ── MAP ──────────────────────────────────────────────────────────────────
+const BASEMAPS = {
+  osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OSM' }),
+  topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { attribution: '© OpenTopoMap', maxZoom: 17 }),
+  satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: '© ESRI' }),
+};
+
+function initMap() {
+  map = L.map('map', { zoomControl: true }).setView([-15, -52], 4);
+  mapLayer = BASEMAPS.osm;
+  mapLayer.addTo(map);
+}
+
+function changeBasemap() {
+  if (!map) return;
+  const sel = document.getElementById('basemap-sel').value;
+  if (mapLayer) map.removeLayer(mapLayer);
+  mapLayer = BASEMAPS[sel];
+  mapLayer.addTo(map);
+}
+
+function renderMap() {
+  if (!map) return;
+  markers.forEach(m => map.removeLayer(m));
+  markers = [];
+
+  const valid = points.filter(p => validateCoord(p.lat, p.lon));
+  valid.forEach(p => {
+    const la = parseCoord(p.lat), lo = parseCoord(p.lon);
+    const cat = categories.find(c => c.nome === p.cat) || categories[0];
+    const icon = L.divIcon({
+      html: `<div style="
+        width:10px;height:10px;border-radius:50%;
+        background:${catColor(p.cat)};
+        border:2px solid rgba(255,255,255,.6);
+        box-shadow:0 0 6px ${catColor(p.cat)};
+      "></div>`,
+      className: '', iconSize: [10,10], iconAnchor: [5,5]
+    });
+    const imgHTML = p.img
+      ? (() => {
+          const origFile      = imgFileStore[p.img];
+          const resolvedSrc   = normalizeGDriveURL(p.img);
+          const btnOriginal = origFile
+            ? `<button onclick="openOriginal('${p.img}')"
+                style="margin-top:4px;width:100%;background:var(--bg3);border:1px solid var(--border2);
+                       color:var(--green);font-family:'Barlow Condensed',sans-serif;font-size:10px;
+                       letter-spacing:1px;padding:3px;cursor:pointer">↗ ABRIR ORIGINAL</button>`
+            : `<a href="${esc(resolvedSrc)}" target="_blank"
+                style="display:block;margin-top:4px;text-align:center;font-size:9px;
+                       color:var(--green);letter-spacing:1px;font-family:'Barlow Condensed',sans-serif">
+                ↗ ABRIR IMAGEM</a>`;
+          return `<div style="margin-top:6px;position:relative">
+            <img src="${esc(resolvedSrc)}"
+              style="width:100%;max-height:80px;object-fit:cover;border:1px solid #2a3330;display:block"
+              onerror="this.parentElement.style.display='none'">
+            <span style="position:absolute;bottom:3px;right:3px;background:rgba(0,0,0,.65);
+              color:#4aff6e;font-size:9px;padding:1px 5px;letter-spacing:1px;
+              font-family:'Barlow Condensed',sans-serif;font-weight:700">PREVIEW</span>
+          </div>${btnOriginal}<br>`;
+        })()
+      : '';
+    const popup = `<div style="font-family:'Share Tech Mono',monospace;font-size:11px;color:#c8d8cc;background:#141816;padding:8px;min-width:160px;max-width:220px">
+      <strong style="color:#4aff6e">${esc(p.nome)||'(sem nome)'}</strong><br>
+      <span style="color:#6a8070">CAT:</span> ${esc(p.cat)}<br>
+      <span style="color:#6a8070">LAT:</span> ${la}<br>
+      <span style="color:#6a8070">LON:</span> ${lo}<br>
+      ${(p.alt && parseFloat(p.alt) !== 0) ? `<span style="color:#6a8070">ALT:</span> ${esc(p.alt)}m<br>` : ''}
+      ${(p.azimute && parseFloat(p.azimute) !== 0) ? `<span style="color:#6a8070">AZ:</span> ${esc(p.azimute)}°<br>` : ''}
+      ${p.decri ? `<span style="color:#6a8070">DECRI:</span> ${esc(p.decri)}<br>` : ''}
+      ${p.data  ? `<span style="color:#6a8070">DATA:</span> ${esc(p.data)}<br>` : ''}
+      ${imgHTML}
+    </div>`;
+    const m = L.marker([la, lo], { icon }).bindPopup(popup, { className: 'kyron-popup' });
+    m.addTo(map);
+    markers.push(m);
+  });
+
+  document.getElementById('map-stat-pts').textContent = points.length;
+  document.getElementById('map-stat-valid').textContent = valid.length;
+}
+
+function fitMap() {
+  if (!map || !markers.length) return;
+  const group = L.featureGroup(markers);
+  map.fitBounds(group.getBounds().pad(0.1));
+}
+
+const CAT_COLORS = ['#4aff6e','#ffb83f','#4ab8ff','#ff6b6b','#b96bff','#6bffee','#ff6bcc'];
+const catColorCache = {};
+let catColorIdx = 0;
+function catColor(catNome) {
+  if (!catColorCache[catNome]) catColorCache[catNome] = CAT_COLORS[catColorIdx++ % CAT_COLORS.length];
+  return catColorCache[catNome];
+}
+
+// ── KML GENERATION ───────────────────────────────────────────────────────
+// imgPathMap:  { blobURL → 'fotos/nome.jpg' }
+// iconPathMap: { blobURL → 'icones/nome.png' }
+// Quando vazios/null, usa os valores originais (blob ou URL externa).
+function buildKML(imgPathMap, iconPathMap) {
+  imgPathMap  = imgPathMap  || {};
+  iconPathMap = iconPathMap || {};
+
+  // Resolve o href final de um ícone de categoria
+  function resolveIcon(icone) {
+    if (!icone) return '';
+    return iconPathMap[icone] || icone;
+  }
+  const optTimestamp = document.getElementById('opt-timestamp').checked;
+  const optFolders   = document.getElementById('opt-folders').checked;
+  const optStyles    = document.getElementById('opt-styles').checked;
+  const optAlt       = document.getElementById('opt-alt').checked;
+  const tz           = document.getElementById('opt-tz').value || 'Z';
+  const fname        = document.getElementById('kml-filename').value || 'kyron93_export';
+
+  const valid = points.filter(p => validateCoord(p.lat, p.lon));
+  if (!valid.length) return null;
+
+  // Styles
+  let stylesXML = '';
+  if (optStyles) {
+    const usedCats = [...new Set(valid.map(p => p.cat))];
+    usedCats.forEach(catNome => {
+      const cat = categories.find(c => c.nome === catNome) || categories[0];
+      if (!cat.ocultar) return;
+      const icone = resolveIcon(cat.icone || '');
+      stylesXML += `
+  <Style id="${xmlEsc(catNome)}_hide">
+    <LabelStyle><scale>0</scale></LabelStyle>
+    <IconStyle><Icon><href>${xmlEsc(icone)}</href></Icon></IconStyle>
+  </Style>
+  <Style id="${xmlEsc(catNome)}_show">
+    <LabelStyle><scale>1.1</scale></LabelStyle>
+    <IconStyle><Icon><href>${xmlEsc(icone)}</href></Icon></IconStyle>
+  </Style>
+  <StyleMap id="${xmlEsc(catNome)}_onoff">
+    <Pair><key>normal</key><styleUrl>#${xmlEsc(catNome)}_hide</styleUrl></Pair>
+    <Pair><key>highlight</key><styleUrl>#${xmlEsc(catNome)}_show</styleUrl></Pair>
+  </StyleMap>`;
+    });
+  }
+
+  // Placemark builder
+  function placemark(p) {
+    const la  = parseCoord(p.lat), lo = parseCoord(p.lon);
+    const alt = optAlt ? (parseFloat(p.alt) || 0) : 0;
+    const cat = categories.find(c => c.nome === p.cat) || categories[0];
+    const icone = resolveIcon(cat.icone || '');
+
+    let styleXML = '';
+    if (optStyles && cat.ocultar) {
+      styleXML = `<styleUrl>#${xmlEsc(p.cat)}_onoff</styleUrl>`;
+    } else {
+      styleXML = `<Style><IconStyle><Icon><href>${xmlEsc(icone)}</href></Icon></IconStyle></Style>`;
+    }
+
+    let tsXML = '';
+    if (optTimestamp && p.data) {
+      const t = p.hora ? `T${p.hora}:00${tz}` : '';
+      tsXML = `<TimeStamp><when>${xmlEsc(p.data)}${t}</when></TimeStamp>`;
+    }
+
+    // Resolve caminho da imagem: usa mapa de substituição se disponível,
+    // e normaliza links do Google Drive para formato compatível com GEarth.
+    let imgSrc = p.img || '';
+    if (imgSrc && imgPathMap[imgSrc]) imgSrc = imgPathMap[imgSrc];
+    imgSrc = normalizeGDriveURL(imgSrc);
+    const imgHTML  = imgSrc ? `<img style="max-width:500px" src="${xmlEsc(imgSrc)}">` : '';
+    const altHTML  = (p.alt && parseFloat(p.alt) !== 0)
+      ? `<p><strong>Alt:</strong> ${xmlEsc(String(p.alt))} m</p>` : '';
+    const azHTML   = (p.azimute && parseFloat(p.azimute) !== 0)
+      ? `<p><strong>Azimute:</strong> ${xmlEsc(String(p.azimute))}°</p>` : '';
+    const descri   = p.decri || '';
+
+    return `  <Placemark>
+    <name>${xmlEsc(p.nome || 'Ponto')}</name>
+    <description><![CDATA[<p>${descri}</p>${altHTML}${azHTML}${imgHTML}<br><sub><i>KYRON 93</i></sub>]]></description>
+    ${styleXML}
+    ${tsXML}
+    <Point><coordinates>${lo},${la},${alt}</coordinates></Point>
+  </Placemark>`;
+  }
+
+  let bodyXML = '';
+  if (optFolders) {
+    const usedCats = [...new Set(valid.map(p => p.cat))].sort();
+    const sc = usedCats.indexOf('Sem Categoria');
+    if (sc > -1) { usedCats.splice(sc, 1); usedCats.push('Sem Categoria'); }
+    usedCats.forEach(catNome => {
+      const catPts = valid.filter(p => p.cat === catNome);
+      if (!catPts.length) return;
+      bodyXML += `\n<Folder>\n<name>${xmlEsc(catNome)}</name>\n`;
+      catPts.forEach(p => { bodyXML += placemark(p) + '\n'; });
+      bodyXML += `</Folder>\n`;
+    });
+  } else {
+    valid.forEach(p => { bodyXML += placemark(p) + '\n'; });
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+<name>${xmlEsc(fname)}</name>
+${stylesXML}
+${bodyXML}
+</Document>
+</kml>`;
+}
+
+function previewKML() {
+  const kml = buildKML({}, {});
+  const pre = document.getElementById('kml-preview');
+  if (!kml) { pre.innerHTML = '<span style="color:var(--red)">// Nenhum ponto com coordenadas válidas.</span>'; return; }
+  pre.innerHTML = kml
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/(&lt;\/?[a-zA-Z][^&]*?&gt;)/g, '<span class="kml-tag">$1</span>')
+    .replace(/("[^"]*")/g, '<span class="kml-val">$1</span>');
+  status('Preview gerado.', 'ok');
+}
+
+function generateKML() {
+  const kml = buildKML({}, {});
+  if (!kml) { status('Nenhum ponto com coordenadas válidas.', 'err'); return; }
+  const hasBlobImgs  = points.some(p => p.img && p.img.startsWith('blob:'));
+  const hasBlobIcons = categories.some(c => c.icone && c.icone.startsWith('blob:'));
+  const fname = (document.getElementById('kml-filename').value || 'kyron93_export').replace(/[^a-zA-Z0-9_\-]/g, '_');
+  download(fname + '.kml', kml, 'application/vnd.google-earth.kml+xml');
+  if (hasBlobImgs || hasBlobIcons) {
+    status('KML gerado. Use "ZIP (KML + fotos)" para exportar com arquivos locais.', 'warn');
+  } else {
+    status(`KML gerado: ${fname}.kml`, 'ok');
+  }
+}
+
+// ── ZIP EXPORT (KML + fotos/ + icones/) ──────────────────────────────────
+async function generateZIP() {
+  const valid = points.filter(p => validateCoord(p.lat, p.lon));
+  if (!valid.length) { status('Nenhum ponto com coordenadas válidas.', 'err'); return; }
+
+  // ── Fotos ──
+  const uniqueImgBlobs = [...new Set(
+    points.filter(p => p.img && p.img.startsWith('blob:')).map(p => p.img)
+  )];
+  const usedImgNames = new Set();
+  const imgPathMap = {};
+  uniqueImgBlobs.forEach(blobURL => {
+    const originalName = Object.keys(imgBlobStore).find(k => imgBlobStore[k] === blobURL) || 'imagem';
+    let safeName = originalName.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+    let finalName = safeName;
+    let counter = 1;
+    while (usedImgNames.has(finalName)) {
+      const ext = safeName.includes('.') ? '.' + safeName.split('.').pop() : '';
+      const base = safeName.slice(0, safeName.length - ext.length);
+      finalName = `${base}_${counter++}${ext}`;
+    }
+    usedImgNames.add(finalName);
+    imgPathMap[blobURL] = `fotos/${finalName}`;
+  });
+
+  // ── Ícones locais ──
+  const uniqueIconBlobs = [...new Set(
+    categories.filter(c => c.icone && c.icone.startsWith('blob:')).map(c => c.icone)
+  )];
+  const usedIconNames = new Set();
+  const iconPathMap = {};
+  uniqueIconBlobs.forEach(blobURL => {
+    const originalName = Object.keys(iconBlobStore).find(k => iconBlobStore[k] === blobURL) || 'icone';
+    let safeName = originalName.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+    let finalName = safeName;
+    let counter = 1;
+    while (usedIconNames.has(finalName)) {
+      const ext = safeName.includes('.') ? '.' + safeName.split('.').pop() : '';
+      const base = safeName.slice(0, safeName.length - ext.length);
+      finalName = `${base}_${counter++}${ext}`;
+    }
+    usedIconNames.add(finalName);
+    iconPathMap[blobURL] = `icones/${finalName}`;
+  });
+
+  // ── KML com caminhos resolvidos ──
+  const kml = buildKML(imgPathMap, iconPathMap);
+  if (!kml) { status('Nenhum ponto válido para exportar.', 'err'); return; }
+
+  const fname = (document.getElementById('kml-filename').value || 'kyron93_export').replace(/[^a-zA-Z0-9_\-]/g, '_');
+  status('Gerando ZIP...', '');
+
+  const zip = new JSZip();
+  zip.file(`${fname}.kml`, kml);
+
+  // ── Adiciona fotos: relê do File original e redimensiona com rotação ──
+  const fetchImgs = uniqueImgBlobs.map(async blobURL => {
+    try {
+      const file = imgFileStore[blobURL];
+      let buf;
+      if (file) {
+        // Obtém orientação do thumb (já extraída no import) — recria a partir do File
+        const exportBlob = await resizeForExport(file, ZIP_DIM, 1);
+        // Orientação já foi corrigida na geração do thumb; reaplica no export
+        // Para garantir: lê orientação do EXIF do original antes de exportar
+        const ori = await getOrientation(file);
+        const correctedBlob = await resizeForExport(file, ZIP_DIM, ori);
+        buf = await correctedBlob.arrayBuffer();
+      } else {
+        buf = await (await fetch(blobURL)).arrayBuffer();
+      }
+      zip.file(imgPathMap[blobURL], buf);
+    } catch(e) { console.warn('Foto não incluída:', e); }
+  });
+
+  // ── Adiciona ícones ──
+  const fetchIcons = uniqueIconBlobs.map(async blobURL => {
+    try {
+      const buf = await (await fetch(blobURL)).arrayBuffer();
+      zip.file(iconPathMap[blobURL], buf);
+    } catch(e) { console.warn('Ícone não incluído:', blobURL, e); }
+  });
+
+  await Promise.all([...fetchImgs, ...fetchIcons]);
+
+  const zipBlob = await zip.generateAsync({
+    type: 'blob',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  }, meta => { status(`Comprimindo... ${meta.percent.toFixed(0)}%`, ''); });
+
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(zipBlob);
+  a.download = `${fname}.zip`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+
+  const extCount = points.filter(p => p.img && p.img.startsWith('http')).length;
+  status(
+    `ZIP gerado: ${fname}.zip` +
+    (uniqueImgBlobs.length  ? ` · ${uniqueImgBlobs.length} foto(s)` : '') +
+    (uniqueIconBlobs.length ? ` · ${uniqueIconBlobs.length} ícone(s)` : '') +
+    (extCount               ? ` · ${extCount} img(ns) externas por URL` : ''),
+    'ok'
+  );
+
+  // Instruções pós-download
+  if (uniqueImgBlobs.length > 0 || uniqueIconBlobs.length > 0) {
+    const getOrigName = (blobURL, store) =>
+      Object.keys(store).find(k => store[k] === blobURL) || blobURL.slice(-12);
+    const fotosTree  = uniqueImgBlobs.map(b  => '│   ├── ' + esc(getOrigName(b, imgBlobStore))).join('\n');
+    const iconesTree = uniqueIconBlobs.map(b => '    ├── ' + esc(getOrigName(b, iconBlobStore))).join('\n');
+    const tree = `${fname}.zip\n├── ${fname}.kml`
+      + (uniqueImgBlobs.length  ? `\n├── fotos/\n${fotosTree}` : '')
+      + (uniqueIconBlobs.length ? `\n└── icones/\n${iconesTree}` : '');
+
+    modal('INSTRUÇÕES DE USO', `
+      <p style="font-family:var(--ui);font-size:13px;margin-bottom:10px">
+        Arquivo <strong style="color:var(--green)">${fname}.zip</strong> baixado com a estrutura:
+      </p>
+      <pre style="font-family:var(--mono);font-size:11px;background:var(--bg3);border:1px solid var(--border);
+                  padding:10px;line-height:1.8;overflow-x:auto;white-space:pre">${tree}</pre>
+      <p style="font-family:var(--ui);font-size:12px;color:var(--amber);margin-top:12px;font-weight:600">
+        ⚠ Para que as imagens apareçam corretamente no Google Earth:
+      </p>
+      <ol style="font-family:var(--ui);font-size:12px;line-height:2.2;margin-left:16px;color:var(--text)">
+        <li>Extraia o ZIP <strong>integralmente</strong> — mantenha a estrutura de pastas.</li>
+        <li>Abra o <strong style="color:var(--green)">${fname}.kml</strong> diretamente da pasta extraída.</li>
+        <li>As pastas <strong>fotos/${uniqueIconBlobs.length ? '</strong> e <strong>icones/' : ''}</strong>
+            devem estar na <strong>mesma pasta</strong> que o .kml.</li>
+        <li>Não mova o .kml sem mover as subpastas junto.</li>
+      </ol>
+      <p style="font-family:var(--ui);font-size:11px;color:var(--text-dim);margin-top:10px">
+        Para compartilhar sem o ZIP, hospede as fotos em um servidor
+        e use URLs externas (https://) no campo Imagem de cada ponto.
+      </p>`,
+      [{ label: 'Entendido', cls: 'btn primary', cb: closeModal }]
+    );
+  }
+}
+
+function updateExportSummary() {
+  const valid    = points.filter(p => validateCoord(p.lat, p.lon));
+  const cats     = [...new Set(valid.map(p => p.cat))];
+  const localImg = points.filter(p => p.img && p.img.startsWith('blob:'));
+  const extImg   = points.filter(p => p.img && p.img.startsWith('http'));
+  const uniqueLocal = [...new Set(localImg.map(p => p.img))];
+
+  const localIcon = categories.filter(c => c.icone && c.icone.startsWith('blob:'));
+
+  document.getElementById('export-summary').innerHTML =
+    `Pontos totais: ${points.length}<br>` +
+    `Pontos válidos: <span style="color:var(--green)">${valid.length}</span><br>` +
+    `Sem coordenada: <span style="color:var(--red)">${points.length - valid.length}</span><br>` +
+    `Categorias com pontos: ${cats.length}<br>` +
+    `Categorias: ${cats.map(c => `<span style="color:var(--amber)">${esc(c)}</span>`).join(', ') || '—'}<br>` +
+    `Fotos locais (blob): <span style="color:#4ab8ff">${uniqueLocal.length} arquivo(s)</span><br>` +
+    `Ícones locais (blob): <span style="color:#4ab8ff">${localIcon.length} ícone(s)</span><br>` +
+    `Imagens externas (URL): <span style="color:var(--text)">${extImg.length}</span>`;
+
+  // Atualiza badge na toolbar
+  const countEl = document.getElementById('zip-img-count');
+  if (uniqueLocal.length > 0) {
+    countEl.textContent = `${uniqueLocal.length} foto(s) local(is) para empacotar`;
+    countEl.style.color = '#4ab8ff';
+  } else {
+    countEl.textContent = 'Sem fotos locais carregadas';
+    countEl.style.color = 'var(--text-dim)';
+  }
+}
+
+// Lê apenas a tag Orientation de um File via EXIF-JS sem criar blob permanente
+function getOrientation(file) {
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = function() {
+      EXIF.getData(img, function() {
+        URL.revokeObjectURL(url);
+        resolve(EXIF.getTag(this, 'Orientation') || 1);
+      });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(1); };
+    img.src = url;
+  });
+}
+
+// Abre o arquivo original em nova aba via URL temporário (sem manter blob em memória)
+function openOriginal(thumbURL) {
+  const file = imgFileStore[thumbURL];
+  if (!file) return;
+  const tempURL = URL.createObjectURL(file);
+  const win = window.open(tempURL, '_blank');
+  // Revoga o URL temporário após a nova aba ter tempo de carregar
+  if (win) win.addEventListener('load', () => URL.revokeObjectURL(tempURL), { once: true });
+  else setTimeout(() => URL.revokeObjectURL(tempURL), 10000);
+}
+function esc(s) {
+  return (s||'').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function xmlEsc(s) {
+  return (s||'').toString()
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+}
+
+function download(name, content, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([content], { type }));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function status(msg, cls = '') {
+  const el = document.getElementById('status-msg');
+  el.textContent = msg;
+  el.className = 'status-msg' + (cls ? ' ' + cls : '');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.textContent = 'PRONTO'; el.className = 'status-msg'; }, 4000);
+}
+
+function updateStats() {
+  const valid = points.filter(p => validateCoord(p.lat, p.lon));
+  document.getElementById('stat-pts').textContent = points.length;
+  document.getElementById('stat-valid').textContent = valid.length;
+  document.getElementById('badge-pontos').textContent = points.length;
+  document.getElementById('sb-rows').textContent = points.length;
+  document.getElementById('sb-ok').textContent = valid.length;
+  document.getElementById('sb-nok').textContent = points.length - valid.length;
+}
+
+// ── MODAL ────────────────────────────────────────────────────────────────
+function modal(title, bodyHTML, buttons) {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-body').innerHTML = bodyHTML;
+  const footer = document.getElementById('modal-footer');
+  footer.innerHTML = '';
+  buttons.forEach(b => {
+    const btn = document.createElement('button');
+    btn.className = b.cls || 'btn';
+    btn.textContent = b.label;
+    btn.onclick = b.cb;
+    footer.appendChild(btn);
+  });
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+
+document.getElementById('modal-overlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeModal();
+});
+
+// ── INIT ─────────────────────────────────────────────────────────────────
+renderCats();
+renderPointsTable();
+status('KYRON 93 pronto. Importe um CSV ou adicione pontos manualmente.', 'ok');
+</script>
+</body>
+</html>
