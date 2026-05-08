@@ -14,6 +14,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exif-js/2.3.0/exif.js"></script>
 <!-- JSZip -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<!-- OverlappingMarkerSpiderfier -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/OverlappingMarkerSpiderfier-Leaflet/0.2.6/oms.min.js"></script>
 
 <style>
 /* =====================================================================
@@ -668,7 +670,7 @@ input[type=file] { display: none; }
   thead th:nth-child(7),  /* Data */
   thead th:nth-child(8),  /* Hora */
   thead th:nth-child(9),  /* Alt */
-  thead th:nth-child(10), /* Az */
+  thead th:nth-child(10), /* AzM */
   tbody td:nth-child(7),
   tbody td:nth-child(8),
   tbody td:nth-child(9),
@@ -776,7 +778,7 @@ input[type=file] { display: none; }
               <th style="min-width:90px">Data</th>
               <th style="min-width:70px">Hora</th>
               <th style="min-width:50px">Alt (m)</th>
-              <th style="min-width:60px">Az (°)</th>
+              <th style="min-width:60px">AzM (°)</th>
               <th style="min-width:150px">Imagem / URL</th>
               <th style="min-width:60px">Coord OK</th>
             </tr>
@@ -938,6 +940,7 @@ let selectedRows = new Set();
 let map = null;
 let mapLayer = null;
 let markers = [];
+let oms = null;  // OverlappingMarkerSpiderfier
 let nextId = 1;
 
 // ── TAB NAVIGATION ─────────────────────────────────────────────────────
@@ -1018,7 +1021,10 @@ function renderPointsTable() {
       <td class="row-num" onclick="toggleSelect(${p.id})">${i+1}</td>
       <td><input value="${esc(p.nome)}"  onchange="updatePoint(${p.id},'nome',this.value)"  placeholder="—"></td>
       <td><input value="${esc(p.lat)}"   onchange="updatePoint(${p.id},'lat',this.value)"   placeholder="ex: -28.5° ou 28°52'S" class="${ok?'':'coord-err'}"></td>
-      <td><input value="${esc(p.lon)}"   onchange="updatePoint(${p.id},'lon',this.value)"   placeholder="ex: -55.5" class="${ok?'':'coord-err'}"></td>
+      <td><div style="display:flex;align-items:center">
+        <input value="${esc(p.lon)}" onchange="updatePoint(${p.id},'lon',this.value)" placeholder="ex: -55.5" class="${ok?'':'coord-err'}" style="flex:1;min-width:0">
+        <button onclick="openPickMap(${p.id})" title="Selecionar no mapa" style="flex-shrink:0;padding:2px 6px;background:var(--bg3);border:1px solid var(--border2);color:var(--green-dim);cursor:pointer;font-size:11px">⊙</button>
+      </div></td>
       <td>
         <div style="display:flex;align-items:center">
           <select onchange="updatePoint(${p.id},'cat',this.value)" style="flex:1">${getCatOptions(p.cat)}</select>
@@ -1049,6 +1055,17 @@ function updatePoint(id, field, val) {
   const p = points.find(p => p.id === id);
   if (!p) return;
 
+  // Detecta coordenada completa "lat, lon" colada no campo Latitude
+  if (field === 'lat') {
+    const fullCoord = /^([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)$/.exec(val.trim());
+    if (fullCoord) {
+      p.lat = fullCoord[1];
+      p.lon = fullCoord[2];
+      renderPointsTable();
+      updateStats();
+      return;
+    }
+  }
   p[field] = val;
 
   // Recategoriza automaticamente quando descrição ou nome mudam,
@@ -1354,14 +1371,10 @@ function extractEXIF(imgEl) {
   try {
     const desc = EXIF.getTag(imgEl, 'ImageDescription') || '';
     if (azimute === null && desc) {
-      // Formatos possíveis no campo texto:
-      // GimbalYaw:147.30  |  GimbalYawDegree: 147.30  |  FlightYaw:147
-      const mGimbal = desc.match(/GimbalYaw(?:Degree)?["'\s:=]*([+-]?\d+\.?\d*)/i);
-      const mFlight = desc.match(/FlightYaw(?:Degree)?["'\s:=]*([+-]?\d+\.?\d*)/i);
-      const mYaw    = desc.match(/<drone-dji:GimbalYaw>([+-]?\d+\.?\d*)<\/drone-dji:GimbalYaw>/i);
-      if (mYaw)    azimute = parseFloat(mYaw[1]);
-      else if (mGimbal) azimute = parseFloat(mGimbal[1]);
-      else if (mFlight) azimute = parseFloat(mFlight[1]);
+        const mGimbal = desc.match(/drone-dji:GimbalYawDegree\s*=\s*"([+-]?\d+\.?\d*)"/i);
+        const mFlight = desc.match(/drone-dji:FlightYawDegree\s*=\s*"([+-]?\d+\.?\d*)"/i);
+        if (mGimbal)      azimute = parseFloat(mGimbal[1]);
+        else if (mFlight) azimute = parseFloat(mFlight[1]);
     }
   } catch(_) {}
 
@@ -1372,10 +1385,10 @@ function extractEXIF(imgEl) {
   } else {
     azimute = null;
   }
+  let latDec = '', lonDec = '';
   if (lat && latR && lon && lonR) {
     const la = dmsToDecEXIF(lat, latR);
     const lo = dmsToDecEXIF(lon, lonR);
-    // Aceita somente se os valores resultantes forem números válidos e dentro dos limites
     if (!isNaN(la) && !isNaN(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180) {
       latDec = la.toString();
       lonDec = lo.toString();
@@ -1492,10 +1505,10 @@ function readDJIXMP(file) {
         // drone-dji:GimbalYaw="147.30"
         // <GimbalYaw>147.30</GimbalYaw>
         const patterns = [
-          /drone-dji:GimbalYaw["\s>]*=?\s*["'>]*([+-]?\d+\.?\d*)/i,
-          /<GimbalYaw>\s*([+-]?\d+\.?\d*)\s*<\/GimbalYaw>/i,
-          /GimbalYaw["\s:=]*([+-]?\d+\.?\d*)/i,
-          /drone-dji:FlightYaw["\s>]*=?\s*["'>]*([+-]?\d+\.?\d*)/i,
+            /drone-dji:GimbalYawDegree\s*=\s*"([+-]?\d+\.?\d*)"/i,
+            /drone-dji:GimbalYaw\s*=\s*"([+-]?\d+\.?\d*)"/i,
+            /drone-dji:FlightYawDegree\s*=\s*"([+-]?\d+\.?\d*)"/i,
+            /drone-dji:FlightYaw\s*=\s*"([+-]?\d+\.?\d*)"/i,
         ];
 
         for (const pat of patterns) {
@@ -1566,16 +1579,16 @@ function importEXIF(event) {
       let xmpAzimute = null;
       try {
         const textView = new TextDecoder('utf-8', { fatal: false }).decode(
-          new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 512 * 1024))
+          new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 2 * 1024 * 1024))
         );
         const xmpStart = textView.indexOf('http://ns.adobe.com/xap/1.0/');
         if (xmpStart !== -1) {
           const snippet = textView.slice(xmpStart, xmpStart + 8192);
           const patterns = [
-            /drone-dji:GimbalYaw[^>]*=?\s*["'>]*([+-]?\d+\.?\d*)/i,
-            /<GimbalYaw>\s*([+-]?\d+\.?\d*)\s*<\/GimbalYaw>/i,
-            /GimbalYaw["'\s:=]+([+-]?\d+\.?\d*)/i,
-            /drone-dji:FlightYaw[^>]*=?\s*["'>]*([+-]?\d+\.?\d*)/i,
+            /drone-dji:GimbalYawDegree\s*=\s*"([+-]?\d+\.?\d*)"/i,
+            /drone-dji:GimbalYaw\s*=\s*"([+-]?\d+\.?\d*)"/i,
+            /drone-dji:FlightYawDegree\s*=\s*"([+-]?\d+\.?\d*)"/i,
+            /drone-dji:FlightYaw\s*=\s*"([+-]?\d+\.?\d*)"/i,
           ];
           for (const pat of patterns) {
             const m = snippet.match(pat);
@@ -1980,6 +1993,20 @@ function initMap() {
   map = L.map('map', { zoomControl: true }).setView([-15, -52], 4);
   mapLayer = BASEMAPS.osm;
   mapLayer.addTo(map);
+
+  // Inicializa spiderfy — abre pontos sobrepostos em leque ao clicar
+  oms = new OverlappingMarkerSpiderfier(map, {
+    nearbyDistance: 14,       // px — distância para considerar sobreposição
+    circleSpiralSwitchover: 6, // até 6 pts em círculo; acima, em espiral
+    spiralFootSeparation: 26,
+    spiralLengthStart: 22,
+    spiralLengthFactor: 4,
+    legWeight: 1.4,
+    legColors: {
+      usual:    'rgba(74,255,110,0.35)',
+      highlighted: 'rgba(74,255,110,0.85)',
+    },
+  });
 }
 
 function changeBasemap() {
@@ -1994,19 +2021,20 @@ function renderMap() {
   if (!map) return;
   markers.forEach(m => map.removeLayer(m));
   markers = [];
+  if (oms) oms.clearMarkers();
 
   const valid = points.filter(p => validateCoord(p.lat, p.lon));
   valid.forEach(p => {
     const la = parseCoord(p.lat), lo = parseCoord(p.lon);
     const cat = categories.find(c => c.nome === p.cat) || categories[0];
+    const color = catColor(p.cat);
     const icon = L.divIcon({
-      html: `<div style="
-        width:10px;height:10px;border-radius:50%;
-        background:${catColor(p.cat)};
-        border:2px solid rgba(255,255,255,.6);
-        box-shadow:0 0 6px ${catColor(p.cat)};
-      "></div>`,
-      className: '', iconSize: [10,10], iconAnchor: [5,5]
+      html: `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="30" viewBox="0 0 22 30">
+        <path d="M11 0C4.925 0 0 4.925 0 11c0 7.333 11 19 11 19s11-11.667 11-19C22 4.925 17.075 0 11 0z"
+          fill="${color}" stroke="rgba(0,0,0,0.45)" stroke-width="1.2"/>
+        <circle cx="11" cy="11" r="4" fill="rgba(0,0,0,0.3)"/>
+      </svg>`,
+      className: '', iconSize: [22, 30], iconAnchor: [11, 30], popupAnchor: [0, -28]
     });
     const imgHTML = p.img
       ? (() => {
@@ -2037,13 +2065,15 @@ function renderMap() {
       <span style="color:#6a8070">LAT:</span> ${la}<br>
       <span style="color:#6a8070">LON:</span> ${lo}<br>
       ${(p.alt && parseFloat(p.alt) !== 0) ? `<span style="color:#6a8070">ALT:</span> ${esc(p.alt)}m<br>` : ''}
-      ${(p.azimute && parseFloat(p.azimute) !== 0) ? `<span style="color:#6a8070">AZ:</span> ${esc(p.azimute)}°<br>` : ''}
+      ${(p.azimute && parseFloat(p.azimute) !== 0) ? `<span style="color:#6a8070">AzM:</span> ${esc(p.azimute)}°<br>` : ''}
       ${p.decri ? `<span style="color:#6a8070">DECRI:</span> ${esc(p.decri)}<br>` : ''}
       ${p.data  ? `<span style="color:#6a8070">DATA:</span> ${esc(p.data)}<br>` : ''}
       ${imgHTML}
     </div>`;
-    const m = L.marker([la, lo], { icon }).bindPopup(popup, { className: 'kyron-popup' });
+    const m = L.marker([la, lo], { icon });
+    m.bindPopup(popup, { className: 'kyron-popup' });
     m.addTo(map);
+    oms.addMarker(m);   // registra no spiderfy
     markers.push(m);
   });
 
@@ -2465,6 +2495,72 @@ function modal(title, bodyHTML, buttons) {
     footer.appendChild(btn);
   });
   document.getElementById('modal-overlay').classList.add('open');
+}
+
+// ── SELEÇÃO DE PONTO NO MAPA (por linha) ─────────────────────────────────
+let pickMapModal = null;   // instância Leaflet do modal de seleção
+let pickMarker   = null;   // marcador temporário
+
+function openPickMap(pointId) {
+  const p = points.find(p => p.id === pointId);
+  if (!p) return;
+
+  const body = `
+    <p style="font-family:var(--ui);font-size:12px;color:var(--text-dim);margin-bottom:8px">
+      Clique no mapa para definir a localização de <strong style="color:var(--green)">${esc(p.nome || 'Ponto ' + pointId)}</strong>.
+    </p>
+    <div id="pick-map" style="width:100%;height:380px;border:1px solid var(--border2)"></div>
+    <div id="pick-coords" style="font-family:var(--mono);font-size:11px;color:var(--text-dim);margin-top:6px;min-height:16px"></div>`;
+
+  modal('SELECIONAR LOCAL NO MAPA', body, [
+    { label: 'Confirmar', cls: 'btn primary', cb: () => {
+        if (pickMarker) {
+          const ll = pickMarker.getLatLng();
+          p.lat = ll.lat.toFixed(6);
+          p.lon = ll.lng.toFixed(6);
+          renderPointsTable();
+          updateStats();
+        }
+        closePickMap();
+        closeModal();
+    }},
+    { label: 'Cancelar', cls: 'btn', cb: () => { closePickMap(); closeModal(); } },
+  ]);
+
+  // Inicializa mapa de seleção após o modal ser inserido no DOM
+  requestAnimationFrame(() => {
+    const startLat = parseCoord(p.lat) || -15;
+    const startLon = parseCoord(p.lon) || -52;
+    const zoom     = (parseCoord(p.lat)) ? 13 : 4;
+
+    pickMapModal = L.map('pick-map').setView([startLat, startLon], zoom);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OSM' }).addTo(pickMapModal);
+
+    // Se o ponto já tem coordenada, mostra marcador inicial
+    if (parseCoord(p.lat) && parseCoord(p.lon)) {
+      pickMarker = L.marker([startLat, startLon], { draggable: true }).addTo(pickMapModal);
+      pickMarker.on('dragend', updatePickCoords);
+    }
+
+    pickMapModal.on('click', e => {
+      if (pickMarker) pickMapModal.removeLayer(pickMarker);
+      pickMarker = L.marker(e.latlng, { draggable: true }).addTo(pickMapModal);
+      pickMarker.on('dragend', updatePickCoords);
+      updatePickCoords();
+    });
+  });
+}
+
+function updatePickCoords() {
+  if (!pickMarker) return;
+  const ll = pickMarker.getLatLng();
+  const el = document.getElementById('pick-coords');
+  if (el) el.textContent = `LAT: ${ll.lat.toFixed(6)}   LON: ${ll.lng.toFixed(6)}`;
+}
+
+function closePickMap() {
+  if (pickMapModal) { pickMapModal.remove(); pickMapModal = null; }
+  pickMarker = null;
 }
 
 function closeModal() {
