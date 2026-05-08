@@ -752,7 +752,7 @@ input[type=file] { display: none; }
         <button class="btn" onclick="document.getElementById('csv-input').click()">↑ CSV</button>
         <input type="file" id="csv-input" accept=".csv" onchange="importCSV(event)">
         <button class="btn" onclick="document.getElementById('img-input').click()">↑ Imagens EXIF</button>
-        <input type="file" id="img-input" accept=".jpg,.jpeg" multiple onchange="importEXIF(event)">
+        <input type="file" id="img-input" accept="image/*" multiple onchange="importEXIF(event)">
         <div class="toolbar-sep"></div>
         <button class="btn danger" onclick="deleteSelected()">✕ Excluir Sel.</button>
         <button class="btn danger" onclick="clearAll()">✕ Limpar Tudo</button>
@@ -1287,7 +1287,9 @@ function dmsToDecEXIF(dms, ref) {
   return parseFloat(v.toFixed(6));
 }
 
-// Extrai todos os dados EXIF necessários de uma imagem já carregada (EXIF.getData)
+// Extrai todos os dados EXIF necessários.
+// Aceita tanto um HTMLImageElement (após EXIF.getData) quanto um objeto
+// {exifdata, _xmpAzimute} construído a partir de readFromBinaryFile.
 function extractEXIF(imgEl) {
   const lat  = EXIF.getTag(imgEl, 'GPSLatitude');
   const latR = EXIF.getTag(imgEl, 'GPSLatitudeRef');
@@ -1331,32 +1333,44 @@ function extractEXIF(imgEl) {
     }
   } catch(_) {}
 
-  // Azimute (direção da câmera) — GPSImgDirection
+  // Azimute (direção da câmera)
+  // Fonte 1: tag EXIF padrão GPSImgDirection (smartphones, câmeras)
   let azimute = null;
   try {
-    const dir    = EXIF.getTag(imgEl, 'GPSImgDirection');
-    const dirRef = EXIF.getTag(imgEl, 'GPSImgDirectionRef'); // 'T' = True, 'M' = Magnético
+    const dir = EXIF.getTag(imgEl, 'GPSImgDirection');
     if (dir !== undefined) {
       azimute = exifFloat(dir);
-      // DJI também grava GimbalYaw no ImageDescription
     }
   } catch(_) {}
 
-  // DJI: tenta extrair GimbalYaw do ImageDescription
+  // Fonte 2: XMP embutido no JPEG — onde o DJI realmente grava GimbalYaw
+  // Será preenchido de forma assíncrona em readDJIXMP() antes de chamar extractEXIF
+  // O valor é passado via imgEl._xmpAzimute (injetado antes desta chamada)
+  if (imgEl._xmpAzimute !== undefined && imgEl._xmpAzimute !== null) {
+    azimute = imgEl._xmpAzimute;
+  }
+
+  // Fonte 3: ImageDescription como fallback (alguns firmwares antigos DJI)
   try {
     const desc = EXIF.getTag(imgEl, 'ImageDescription') || '';
-    if (desc.includes('drone-dji') || desc.includes('GimbalYaw') || desc.includes('FlightYaw')) {
-      const mGimbal = desc.match(/GimbalYaw[Degree]*["\s:]*([+-]?\d+\.?\d*)/i);
-      const mFlight = desc.match(/FlightYaw[Degree]*["\s:]*([+-]?\d+\.?\d*)/i);
-      if (mGimbal) azimute = parseFloat(mGimbal[1]);
-      else if (mFlight && azimute === null) azimute = parseFloat(mFlight[1]);
+    if (azimute === null && desc) {
+      // Formatos possíveis no campo texto:
+      // GimbalYaw:147.30  |  GimbalYawDegree: 147.30  |  FlightYaw:147
+      const mGimbal = desc.match(/GimbalYaw(?:Degree)?["'\s:=]*([+-]?\d+\.?\d*)/i);
+      const mFlight = desc.match(/FlightYaw(?:Degree)?["'\s:=]*([+-]?\d+\.?\d*)/i);
+      const mYaw    = desc.match(/<drone-dji:GimbalYaw>([+-]?\d+\.?\d*)<\/drone-dji:GimbalYaw>/i);
+      if (mYaw)    azimute = parseFloat(mYaw[1]);
+      else if (mGimbal) azimute = parseFloat(mGimbal[1]);
+      else if (mFlight) azimute = parseFloat(mFlight[1]);
     }
   } catch(_) {}
 
   // Normaliza azimute para 0–360
-  if (azimute !== null) {
+  if (azimute !== null && !isNaN(azimute)) {
     azimute = ((azimute % 360) + 360) % 360;
     azimute = parseFloat(azimute.toFixed(1));
+  } else {
+    azimute = null;
   }
   if (lat && latR && lon && lonR) {
     const la = dmsToDecEXIF(lat, latR);
@@ -1452,49 +1466,161 @@ function normalizeGDriveURL(url) {
   return url;
 }
 
+// Lê o bloco XMP embutido no JPEG binário e extrai GimbalYaw/FlightYaw DJI.
+// O XMP é um bloco APP1 com header "http://ns.adobe.com/xap/1.0/\x00".
+// Retorna o azimute em graus (float) ou null se não encontrado.
+function readDJIXMP(file) {
+  return new Promise(resolve => {
+    // Lê apenas os primeiros 128 KB — o XMP fica sempre no início do JPEG
+    const slice = file.slice(0, 131072);
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const buf  = e.target.result;
+        const arr  = new Uint8Array(buf);
+        const text = new TextDecoder('utf-8', { fatal: false }).decode(arr);
+
+        // Procura o namespace XMP da DJI
+        const xmpStart = text.indexOf('http://ns.adobe.com/xap/1.0/');
+        if (xmpStart === -1) { resolve(null); return; }
+
+        // Extrai até 8 KB a partir dali — suficiente para o bloco XMP DJI
+        const xmpSnippet = text.slice(xmpStart, xmpStart + 8192);
+
+        // Padrões XMP DJI:
+        // <drone-dji:GimbalYaw>147.30</drone-dji:GimbalYaw>
+        // drone-dji:GimbalYaw="147.30"
+        // <GimbalYaw>147.30</GimbalYaw>
+        const patterns = [
+          /drone-dji:GimbalYaw["\s>]*=?\s*["'>]*([+-]?\d+\.?\d*)/i,
+          /<GimbalYaw>\s*([+-]?\d+\.?\d*)\s*<\/GimbalYaw>/i,
+          /GimbalYaw["\s:=]*([+-]?\d+\.?\d*)/i,
+          /drone-dji:FlightYaw["\s>]*=?\s*["'>]*([+-]?\d+\.?\d*)/i,
+        ];
+
+        for (const pat of patterns) {
+          const m = xmpSnippet.match(pat);
+          if (m) {
+            const v = parseFloat(m[1]);
+            resolve(isNaN(v) ? null : v);
+            return;
+          }
+        }
+        resolve(null);
+      } catch(_) { resolve(null); }
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsArrayBuffer(slice);
+  });
+}
+
 function importEXIF(event) {
-  const files = Array.from(event.target.files);
-  if (!files.length) return;
+  // Copia a lista de arquivos imediatamente — antes de qualquer async —
+  // pois alguns navegadores invalidam event.target.files após reset do input.
+  const files = Array.from(event.target.files || []);
+  event.target.value = '';           // reset seguro: arquivos já copiados
+
+  if (!files.length) {
+    status('Nenhuma imagem recebida. Tente novamente ou verifique o formato do arquivo.', 'warn');
+    console.warn('importEXIF: event.target.files vazio após seleção.');
+    return;
+  }
+  console.log(`importEXIF: ${files.length} arquivo(s) recebido(s):`, files.map(f => f.name + ' (' + f.type + ')'));
 
   let processed = 0, found = 0;
   const results = [];
   const total   = files.length;
 
-  // Barra de progresso inline na status bar
   function updateProgress() {
     const pct = Math.round((processed / total) * 100);
-    status(
-      `Carregando imagens: ${processed}/${total} (${pct}%) — processando thumbnails...`,
-      ''
-    );
-    document.getElementById('sb-mem').parentElement.style.opacity = '0.5';
+    status(`Carregando imagens: ${processed}/${total} (${pct}%) — processando thumbnails...`, '');
+    const memEl = document.getElementById('sb-mem');
+    if (memEl) memEl.parentElement.style.opacity = '0.5';
   }
   updateProgress();
 
+  // Registra um resultado de erro e avança o contador — garante que
+  // finishEXIFImport sempre é chamado mesmo em caso de falha parcial.
+  function recordError(file) {
+    results.push({
+      file, thumbURL: '', origSize: file.size, thumbSize: 0,
+      latDec: '', lonDec: '', data: '', hora: '', make: '', model: '',
+      hasGPS: false, orientation: 1, altFinal: '', azimute: null,
+    });
+    processed++;
+    updateProgress();
+    if (processed === total) finishEXIFImport(results, found);
+  }
+
   files.forEach(file => {
-    const origUrl = URL.createObjectURL(file);
-    const imgEl   = new Image();
+    console.log(`[EXIF] iniciando: ${file.name} (${file.type}, ${file.size}b)`);
 
-    imgEl.onload = function() {
-      EXIF.getData(imgEl, function() {
-        URL.revokeObjectURL(origUrl);
-        const exif = extractEXIF(this);
-        if (exif.hasGPS) found++;
+    // Lê o arquivo inteiro como ArrayBuffer uma só vez.
+    // Isso evita o erro "Unsafe attempt to load URL file://" que ocorre quando
+    // EXIF-JS tenta re-fetchar a URL em contexto file:// para arquivos grandes.
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+      const buffer = ev.target.result;
 
-        // Gera somente o thumbnail leve para uso em memória
-        makeThumbnail(file, THUMB_DIM, exif.orientation).then(thumbBlob => {
+      // ── XMP DJI: extrai azimute do buffer já lido ──
+      let xmpAzimute = null;
+      try {
+        const textView = new TextDecoder('utf-8', { fatal: false }).decode(
+          new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 512 * 1024))
+        );
+        const xmpStart = textView.indexOf('http://ns.adobe.com/xap/1.0/');
+        if (xmpStart !== -1) {
+          const snippet = textView.slice(xmpStart, xmpStart + 8192);
+          const patterns = [
+            /drone-dji:GimbalYaw[^>]*=?\s*["'>]*([+-]?\d+\.?\d*)/i,
+            /<GimbalYaw>\s*([+-]?\d+\.?\d*)\s*<\/GimbalYaw>/i,
+            /GimbalYaw["'\s:=]+([+-]?\d+\.?\d*)/i,
+            /drone-dji:FlightYaw[^>]*=?\s*["'>]*([+-]?\d+\.?\d*)/i,
+          ];
+          for (const pat of patterns) {
+            const m = snippet.match(pat);
+            if (m) { xmpAzimute = parseFloat(m[1]); break; }
+          }
+        }
+      } catch(_) {}
+      console.log(`[EXIF] XMP: ${file.name} az=${xmpAzimute}`);
+
+      // ── EXIF: passa ArrayBuffer diretamente (sem blob URL) ──
+      // Cria um objeto simulado que o EXIF-JS aceita via EXIF.readFromBinaryFile
+      let exif;
+      try {
+        const binary = EXIF.readFromBinaryFile(buffer);
+        // Cria um objeto imgEl simulado com os dados já lidos
+        const fakeImg = { exifdata: binary || {}, _xmpAzimute: xmpAzimute };
+        exif = extractEXIF(fakeImg);
+      } catch(e) {
+        console.warn('[EXIF] readFromBinaryFile falhou, tentando fallback via blob:', file.name, e);
+        // Fallback: blob URL (funciona em http://, não em file://)
+        exif = { latDec:'', lonDec:'', data:'', hora:'', make:'', model:'',
+                 hasGPS: false, orientation: 1, altFinal: '', azimute: xmpAzimute };
+      }
+      console.log(`[EXIF] coords: lat=${exif.latDec} lon=${exif.lonDec} az=${exif.azimute}`);
+      if (exif.hasGPS) found++;
+
+      // ── Thumbnail: usa blob URL só para canvas (sem requisição EXIF) ──
+      makeThumbnail(file, THUMB_DIM, exif.orientation)
+        .then(thumbBlob => {
           const thumbURL = URL.createObjectURL(thumbBlob);
           imgBlobStore[file.name] = thumbURL;
           imgFileStore[thumbURL]  = file;
           blobSizeStore[thumbURL] = thumbBlob.size;
           updateMemDisplay();
-          document.getElementById('sb-mem').parentElement.style.opacity = '1';
+          const memEl = document.getElementById('sb-mem');
+          if (memEl) memEl.parentElement.style.opacity = '1';
 
           results.push({ file, thumbURL, origSize: file.size, thumbSize: thumbBlob.size, ...exif });
           processed++;
           updateProgress();
+          console.log(`[EXIF] concluído ${processed}/${total}: ${file.name}`);
           if (processed === total) finishEXIFImport(results, found);
-        }).catch(() => {
+        })
+        .catch(err => {
+          console.warn('[EXIF] makeThumbnail falhou, usando original:', file.name, err);
           const thumbURL = URL.createObjectURL(file);
           imgBlobStore[file.name] = thumbURL;
           imgFileStore[thumbURL]  = file;
@@ -1505,22 +1631,15 @@ function importEXIF(event) {
           updateProgress();
           if (processed === total) finishEXIFImport(results, found);
         });
-      });
     };
 
-    imgEl.onerror = () => {
-      URL.revokeObjectURL(origUrl);
-      results.push({ file, thumbURL: '', origSize: file.size, thumbSize: 0,
-        latDec:'', lonDec:'', data:'', hora:'', make:'', model:'',
-        hasGPS: false, orientation: 1, altFinal: '' });
-      processed++;
-      updateProgress();
-      if (processed === total) finishEXIFImport(results, found);
+    reader.onerror = () => {
+      console.warn('[EXIF] FileReader falhou:', file.name);
+      recordError(file);
     };
 
-    imgEl.src = origUrl;
+    reader.readAsArrayBuffer(file);
   });
-  event.target.value = '';
 }
 
 function finishEXIFImport(results, found) {
