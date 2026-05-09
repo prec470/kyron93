@@ -720,6 +720,12 @@ input[type=file] { display: none; }
   /* Em telas muito pequenas, esconde também a coluna Imagem */
   thead th:nth-child(11), tbody td:nth-child(11) { display: none; }
 }
+
+/* Impede que o browser reaplique rotação EXIF em thumbs já corrigidos */
+.thumb-img {
+  image-orientation: none;
+}
+
 </style>
 </head>
 <body>
@@ -753,7 +759,7 @@ input[type=file] { display: none; }
         <button class="btn primary" onclick="addRow()">+ Linha</button>
         <button class="btn" onclick="document.getElementById('csv-input').click()">↑ CSV</button>
         <input type="file" id="csv-input" accept=".csv" onchange="importCSV(event)">
-        <button class="btn" onclick="document.getElementById('img-input').click()">↑ Imagens EXIF</button>
+        <button class="btn" onclick="document.getElementById('img-input').click()">↑ Imagens</button>
         <input type="file" id="img-input" accept="image/*" multiple onchange="importEXIF(event)">
         <div class="toolbar-sep"></div>
         <button class="btn danger" onclick="deleteSelected()">✕ Excluir Sel.</button>
@@ -1037,7 +1043,7 @@ function renderPointsTable() {
       <td><input value="${esc(p.hora)}"  onchange="updatePoint(${p.id},'hora',this.value)"  placeholder="HH:MM"></td>
       <td><input value="${esc(p.alt)}"   onchange="updatePoint(${p.id},'alt',this.value)"   placeholder="0" style="width:50px"></td>
       <td><input value="${esc(p.azimute)}" onchange="updatePoint(${p.id},'azimute',this.value)" placeholder="—" style="width:54px"></td>
-      <td><div style="display:flex;align-items:center;gap:4px">${(() => { const src = normalizeGDriveURL(p.img); return src && (src.startsWith('blob:') || src.startsWith('http')) ? `<img src="${esc(src)}" style="width:32px;height:24px;object-fit:cover;border:1px solid var(--border2);flex-shrink:0" onerror="this.style.display='none'">` : ''; })()}<input value="${esc(p.img)}" onchange="updatePoint(${p.id},'img',this.value)" placeholder="url ou nome.jpg" style="min-width:0;flex:1"></div></td>
+      <td><div style="display:flex;align-items:center;gap:4px">${(() => { const src = normalizeGDriveURL(p.img); if (!src || (!src.startsWith('blob:') && !src.startsWith('http'))) return ''; const isLocal = !!imgFileStore[p.img]; return `<img src="${esc(src)}" class="thumb-img" onclick="${isLocal ? `openOriginal('${esc(p.img)}')` : `window.open('${esc(src)}','_blank')`}" style="width:32px;height:24px;object-fit:cover;border:1px solid var(--border2);flex-shrink:0;cursor:pointer" title="Clique para ampliar" onerror="this.style.display='none'">`; })()}<input value="${esc(p.img)}" onchange="updatePoint(${p.id},'img',this.value)" placeholder="url ou nome.jpg" style="min-width:0;flex:1"></div></td>
       <td style="text-align:center;font-family:var(--mono);font-size:13px" class="${coordClass}">${coordIcon}</td>
     </tr>`;
   }).join('');
@@ -2051,7 +2057,7 @@ function renderMap() {
                 ↗ ABRIR IMAGEM</a>`;
           return `<div style="margin-top:6px;position:relative">
             <img src="${esc(resolvedSrc)}"
-              style="width:100%;max-height:80px;object-fit:cover;border:1px solid #2a3330;display:block"
+              style="width:100%;max-height:80px;object-fit:cover;border:1px solid #2a3330;display:block;image-orientation:none"
               onerror="this.parentElement.style.display='none'">
             <span style="position:absolute;bottom:3px;right:3px;background:rgba(0,0,0,.65);
               color:#4aff6e;font-size:9px;padding:1px 5px;letter-spacing:1px;
