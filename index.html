@@ -759,7 +759,8 @@ input[type=file] { display: none; }
         <button class="btn primary" onclick="addRow()">+ Linha</button>
         <button class="btn" onclick="document.getElementById('csv-input').click()">↑ CSV</button>
         <input type="file" id="csv-input" accept=".csv" onchange="importCSV(event)">
-        <button class="btn" onclick="document.getElementById('img-input').click()">↑ Imagens</button>
+        <button class="btn" onclick="document.getElementById('img-input').click()" title="Android: use o Gerenciador de Arquivos (não a Galeria) para preservar metadados GPS">↑ Imagens</button>
+        <button class="btn" onclick="promptImageURLs()">↑ URL de Imagens</button>
         <input type="file" id="img-input" accept="image/*" multiple onchange="importEXIF(event)">
         <div class="toolbar-sep"></div>
         <button class="btn danger" onclick="deleteSelected()">✕ Excluir Sel.</button>
@@ -1173,6 +1174,56 @@ function normalizeHeader(h) {
   return h.toLowerCase();
 }
 
+// ── IMPORTAÇÃO DE IMAGENS POR URL ─────────────────────────────────────────
+function promptImageURLs() {
+  const body = `
+    <p style="font-family:var(--ui);font-size:12px;color:var(--text-dim);margin-bottom:8px">
+      Cole uma ou mais URLs de imagem, separadas por vírgula ou por linha.<br>
+      Links do Google Drive são convertidos automaticamente.
+    </p>
+    <textarea id="url-input" placeholder="https://exemplo.com/foto1.jpg, https://drive.google.com/file/d/.../view"
+      style="width:100%;height:120px;background:var(--bg3);border:1px solid var(--border2);
+             color:var(--text);font-family:var(--mono);font-size:11px;padding:8px;
+             resize:vertical;outline:none;line-height:1.6"></textarea>
+    <p style="font-family:var(--ui);font-size:11px;color:var(--text-dim);margin-top:4px">
+      Cada URL gerará uma linha na tabela. Preencha nome e coordenadas depois,
+      ou use o botão ⊙ para selecionar o local no mapa.
+    </p>`;
+
+  modal('IMPORTAR IMAGENS POR URL', body, [
+    { label: 'Importar', cls: 'btn primary', cb: () => {
+        const raw = document.getElementById('url-input').value;
+        if (!raw.trim()) { closeModal(); return; }
+
+        const urls = raw.split(/[\n,]+/).map(u => u.trim()).filter(u => u.length > 0);
+        if (!urls.length) { closeModal(); return; }
+
+        let added = 0;
+        urls.forEach(url => {
+          const normalized = normalizeGDriveURL(url);
+          let nome = '';
+          try {
+            const pathname = new URL(normalized).pathname;
+            const parts = pathname.split('/').filter(Boolean);
+            nome = decodeURIComponent(parts[parts.length - 1] || '')
+              .replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ').trim();
+          } catch(_) {}
+          if (/^[a-zA-Z0-9_\-]{20,}$/.test(nome)) nome = '';
+          addRow({ nome, img: normalized });
+          added++;
+        });
+        closeModal();
+        status(`${added} imagem(ns) por URL adicionada(s). Complete nome e coordenadas.`, 'ok');
+    }},
+    { label: 'Cancelar', cls: 'btn', cb: closeModal },
+  ]);
+
+  requestAnimationFrame(() => {
+    const ta = document.getElementById('url-input');
+    if (ta) ta.focus();
+  });
+}
+
 function importCSV(event) {
   const file = event.target.files[0];
   if (!file) return;
@@ -1467,6 +1518,169 @@ function makeThumbnail(file, maxDim, orientation) {
 // Redimensiona (corrigindo orientação) para exportação no ZIP
 function resizeForExport(file, maxDim, orientation) {
   return makeThumbnail(file, maxDim, orientation);
+}
+
+// ── INJEÇÃO DE METADADOS GPS NO JPEG ─────────────────────────────────────
+// Escreve um valor uint16 big-endian no DataView
+function writeUint16(dv, offset, val) {
+  dv.setUint16(offset, val, false);
+}
+function writeUint32(dv, offset, val) {
+  dv.setUint32(offset, val, false);
+}
+
+// Converte grau decimal para racional DMS (graus, minutos, segundos)
+// Retorna array de 3 pares [numerador, denominador]
+function decToDMSRational(dec) {
+  dec = Math.abs(dec);
+  const d = Math.floor(dec);
+  const mFull = (dec - d) * 60;
+  const m = Math.floor(mFull);
+  const s = Math.round((mFull - m) * 60 * 100); // centésimos de segundo
+  return [[d, 1], [m, 1], [s, 100]];
+}
+
+// Injeta GPS EXIF em um ArrayBuffer JPEG.
+// Retorna novo ArrayBuffer com os metadados, ou o original se algo falhar.
+function injectGPSExif(jpegBuffer, lat, lon, altM) {
+  try {
+    const src = new Uint8Array(jpegBuffer);
+
+    // Verifica assinatura JPEG
+    if (src[0] !== 0xFF || src[1] !== 0xD8) return jpegBuffer;
+
+    // Verifica se já há GPS EXIF (busca "GPS" nos primeiros 64KB)
+    const peek = new TextDecoder('latin1').decode(src.slice(0, 65536));
+    if (peek.includes('GPSLatitude') || peek.includes('\x02\x00\x05\x00')) {
+      return jpegBuffer; // já tem GPS — não sobrescreve
+    }
+
+    // ── Monta IFD GPS ──
+    // Tags GPS: GPSLatitudeRef(1), GPSLatitude(2), GPSLongitudeRef(3),
+    //           GPSLongitude(4), GPSAltitudeRef(5), GPSAltitude(6)
+    const latDMS = decToDMSRational(lat);
+    const lonDMS = decToDMSRational(lon);
+    const latRef = lat >= 0 ? 0x4E : 0x53; // 'N' ou 'S'
+    const lonRef = lon >= 0 ? 0x45 : 0x57; // 'E' ou 'W'
+    const hasAlt = altM !== null && altM !== undefined && !isNaN(parseFloat(altM));
+    const altVal = hasAlt ? Math.round(Math.abs(parseFloat(altM)) * 100) : 0;
+    const altRef = (hasAlt && parseFloat(altM) < 0) ? 1 : 0;
+
+    const numTags = hasAlt ? 6 : 4;
+
+    // Tamanho do IFD GPS:
+    // 2 (count) + numTags*12 (entries) + 4 (next IFD offset)
+    // + dados racionais fora do campo (3 racionais * 8 bytes = 24 bytes cada coordenada)
+    // Racionais: lat(24) + lon(24) + alt(8 se hasAlt)
+    const ifdSize  = 2 + numTags * 12 + 4;
+    const dataSize = 24 + 24 + (hasAlt ? 8 : 0); // 3 racionais por coord + alt
+    const gpsIFDSize = ifdSize + dataSize;
+
+    // Monta TIFF header + IFD0 (apenas ponteiro para GPS SubIFD)
+    // IFD0: 1 tag (GPSInfoIFDPointer = 0x8825)
+    const ifd0Tags = 1;
+    const ifd0Size = 2 + ifd0Tags * 12 + 4;
+    const tiffHeaderSize = 8; // "MM" + 0x002A + offset to IFD0
+    const gpsIFDOffset = tiffHeaderSize + ifd0Size; // onde começa o GPS IFD
+
+    const totalExifDataSize = tiffHeaderSize + ifd0Size + gpsIFDSize;
+    // APP1 marker(2) + length(2) + "Exif\0\0"(6) + TIFF data
+    const app1Size = 2 + 2 + 6 + totalExifDataSize;
+
+    const out = new Uint8Array(src.length + app1Size);
+    const dv  = new DataView(out.buffer);
+    let pos = 0;
+
+    // SOI
+    out[pos++] = 0xFF; out[pos++] = 0xD8;
+
+    // APP1 marker
+    out[pos++] = 0xFF; out[pos++] = 0xE1;
+    // APP1 length (não inclui os 2 bytes do marker, inclui os 2 do length)
+    dv.setUint16(pos, app1Size - 2, false); pos += 2;
+
+    // "Exif\0\0"
+    [0x45,0x78,0x69,0x66,0x00,0x00].forEach(b => out[pos++] = b);
+
+    // ── TIFF Header (big-endian) ──
+    const tiffBase = pos; // posição base para offsets TIFF
+    out[pos++] = 0x4D; out[pos++] = 0x4D; // "MM" = big-endian
+    out[pos++] = 0x00; out[pos++] = 0x2A; // magic
+    dv.setUint32(pos, 8, false); pos += 4; // offset do IFD0 = 8 (logo após header)
+
+    // ── IFD0: 1 tag (GPSInfoIFDPointer) ──
+    dv.setUint16(pos, ifd0Tags, false); pos += 2;
+    // Tag 0x8825 - GPSInfoIFDPointer, type LONG(4), count 1, value = offset do GPS IFD
+    dv.setUint16(pos, 0x8825, false); pos += 2; // tag
+    dv.setUint16(pos, 4,      false); pos += 2; // type LONG
+    dv.setUint32(pos, 1,      false); pos += 4; // count
+    dv.setUint32(pos, gpsIFDOffset, false); pos += 4; // value = offset GPS IFD
+    dv.setUint32(pos, 0,      false); pos += 4; // next IFD = 0
+
+    // ── GPS IFD ──
+    const gpsIFDStart = pos - tiffBase; // deve ser == gpsIFDOffset
+    // Offset para área de dados (após o IFD)
+    let dataOffset = gpsIFDOffset + ifdSize;
+
+    dv.setUint16(pos, numTags, false); pos += 2;
+
+    // Escreve uma entrada IFD
+    function writeIFDEntry(tag, type, count, valueOrOffset) {
+      dv.setUint16(pos, tag,          false); pos += 2;
+      dv.setUint16(pos, type,         false); pos += 2;
+      dv.setUint32(pos, count,        false); pos += 4;
+      dv.setUint32(pos, valueOrOffset,false); pos += 4;
+    }
+
+    // GPSLatitudeRef (tag 1, ASCII, count 2 "N\0" ou "S\0")
+    const latRefVal = (latRef << 24); // 1 byte no campo de 4
+    writeIFDEntry(0x0001, 2, 2, latRef << 24);
+
+    // GPSLatitude (tag 2, RATIONAL, count 3) — dados fora do campo
+    writeIFDEntry(0x0002, 5, 3, dataOffset);
+    const latDataOff = dataOffset; dataOffset += 24;
+
+    // GPSLongitudeRef (tag 3)
+    writeIFDEntry(0x0003, 2, 2, lonRef << 24);
+
+    // GPSLongitude (tag 4, RATIONAL, count 3)
+    writeIFDEntry(0x0004, 5, 3, dataOffset);
+    const lonDataOff = dataOffset; dataOffset += 24;
+
+    if (hasAlt) {
+      // GPSAltitudeRef (tag 5, BYTE, count 1)
+      writeIFDEntry(0x0005, 1, 1, altRef);
+      // GPSAltitude (tag 6, RATIONAL, count 1)
+      writeIFDEntry(0x0006, 5, 1, dataOffset);
+      dataOffset += 8;
+    }
+
+    dv.setUint32(pos, 0, false); pos += 4; // next IFD = 0
+
+    // ── Área de dados racionais ──
+    // Escreve 3 racionais (graus, minutos, segundos)
+    function writeRationals(dms) {
+      dms.forEach(([num, den]) => {
+        dv.setUint32(pos, num, false); pos += 4;
+        dv.setUint32(pos, den, false); pos += 4;
+      });
+    }
+
+    writeRationals(latDMS);
+    writeRationals(lonDMS);
+    if (hasAlt) {
+      dv.setUint32(pos, altVal, false); pos += 4;
+      dv.setUint32(pos, 100,    false); pos += 4;
+    }
+
+    // ── Resto do JPEG original (sem o SOI que já copiamos) ──
+    out.set(src.slice(2), pos);
+
+    return out.buffer;
+  } catch(e) {
+    console.warn('injectGPSExif falhou:', e);
+    return jpegBuffer; // retorna original sem modificação
+  }
 }
 
 // Converte links do Google Drive para URL direta de visualização compatível
@@ -2310,21 +2524,33 @@ async function generateZIP() {
   zip.file(`${fname}.kml`, kml);
 
   // ── Adiciona fotos: relê do File original e redimensiona com rotação ──
+  // Monta mapa de blob → ponto para injeção de GPS
+  const blobToPoint = {};
+  points.forEach(p => {
+    if (p.img && p.img.startsWith('blob:')) blobToPoint[p.img] = p;
+  });
+
   const fetchImgs = uniqueImgBlobs.map(async blobURL => {
     try {
       const file = imgFileStore[blobURL];
       let buf;
       if (file) {
-        // Obtém orientação do thumb (já extraída no import) — recria a partir do File
-        const exportBlob = await resizeForExport(file, ZIP_DIM, 1);
-        // Orientação já foi corrigida na geração do thumb; reaplica no export
-        // Para garantir: lê orientação do EXIF do original antes de exportar
         const ori = await getOrientation(file);
         const correctedBlob = await resizeForExport(file, ZIP_DIM, ori);
         buf = await correctedBlob.arrayBuffer();
       } else {
         buf = await (await fetch(blobURL)).arrayBuffer();
       }
+
+      // Injeta GPS se o ponto tiver coordenadas e a foto não tiver GPS
+      const p = blobToPoint[blobURL];
+      if (p) {
+        const la = parseFloat(p.lat), lo = parseFloat(p.lon);
+        if (!isNaN(la) && !isNaN(lo) && validateCoord(p.lat, p.lon)) {
+          buf = injectGPSExif(buf, la, lo, p.alt || null);
+        }
+      }
+
       zip.file(imgPathMap[blobURL], buf);
     } catch(e) { console.warn('Foto não incluída:', e); }
   });
