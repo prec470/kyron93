@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -976,7 +977,7 @@ function parseCoord(raw) {
   if (!isNaN(dec) && raw.match(/^[+-]?\d+[.,]?\d*$/)) return dec;
 
   // GMS: 28° 52' 23.6" S  ou  28 52 23.6 S
-  const gmsRe = /([+-]?\d+)[°ºo\s]+(\d+)[\'`\s]+(\d+\.?\d*)[\"\"\"]*\s*([NSEWOLnsewol]?)/;
+  const gmsRe = /([+-]?\d+)[°ºo\s]+(\d+)[\'`′\s]+(\d+\.?\d*)[\"″]*\s*([NSEWOLnsewol]?)/;
   const m = raw.match(gmsRe);
   if (m) {
     let g = parseFloat(m[1]), min = parseFloat(m[2]), sec = parseFloat(m[3]);
@@ -1062,24 +1063,70 @@ function updatePoint(id, field, val) {
   const p = points.find(p => p.id === id);
   if (!p) return;
 
+  // Regex para uma coordenada GMS única
+  // Ex: 23°30'15"S  |  23 30 15 S  |  -23 30 15
+  const reGMS = /^([+-]?\d+)[°ºo\s]+(\d+)[\'`′\s]+(\d+\.?\d*)[\"″]*\s*([NSEWOLnsewol]?)$/;
+
+  // Converte GMS para decimal, aplicando sinal conforme hemisférico
+  function gmsToDecimal(deg, min, sec, dir) {
+    let dd = parseFloat(deg) + parseFloat(min) / 60 + parseFloat(sec) / 3600;
+    if (/[SsWwOoLl]/.test(dir)) dd = -Math.abs(dd);
+    return dd;
+  }
+
+  // Tenta extrair uma coordenada de uma string (decimal ou GMS)
+  function parseCoord(str) {
+    str = str.trim();
+    const dec = /^([+-]?\d+\.?\d*)$/.exec(str);
+    if (dec) return parseFloat(dec[1]);
+    const gms = reGMS.exec(str);
+    if (gms) return gmsToDecimal(gms[1], gms[2], gms[3], gms[4]);
+    return null;
+  }
+
   // Detecta coordenada completa "lat, lon" colada no campo Latitude
+  // Aceita decimal ("−23.5, −46.6") ou GMS ("23°30′15″S, 46°37′30″W") ou misto
   if (field === 'lat') {
-    const fullCoord = /^([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)$/.exec(val.trim());
-    if (fullCoord) {
-      p.lat = fullCoord[1];
-      p.lon = fullCoord[2];
+    const raw = val.trim();
+    const commaIdx = raw.indexOf(',');
+    if (commaIdx !== -1) {
+      const latVal = parseCoord(raw.slice(0, commaIdx));
+      const lonVal = parseCoord(raw.slice(commaIdx + 1));
+      if (latVal !== null && lonVal !== null) {
+        p.lat = latVal;
+        p.lon = lonVal;
+        renderPointsTable();
+        updateStats();
+        return;
+      }
+    }
+    // Coordenada simples em GMS no campo lat
+    const single = parseCoord(raw);
+    if (single !== null) {
+      p.lat = single;
       renderPointsTable();
       updateStats();
       return;
     }
   }
+
+  // Coordenada GMS no campo lon
+  if (field === 'lon') {
+    const lonVal = parseCoord(val.trim());
+    if (lonVal !== null) {
+      p.lon = lonVal;
+      renderPointsTable();
+      updateStats();
+      return;
+    }
+  }
+
   p[field] = val;
 
   // Recategoriza automaticamente quando descrição ou nome mudam,
   // desde que a categoria ainda seja 'Sem Categoria' ou tenha vindo de autocat.
   if (field === 'decri' || field === 'nome') {
     if (p.cat === 'Sem Categoria' || p._autocat) {
-      // Testa descrição primeiro; se vazia, testa nome
       const texto = p.decri || p.nome || '';
       const novaCat = autocat(texto);
       if (novaCat !== p.cat) {
@@ -1179,15 +1226,15 @@ function promptImageURLs() {
   const body = `
     <p style="font-family:var(--ui);font-size:12px;color:var(--text-dim);margin-bottom:8px">
       Cole uma ou mais URLs de imagem, separadas por vírgula ou por linha.<br>
-      Links do Google Drive são convertidos automaticamente.
+      Links do Google Drive são convertidos automaticamente.<br>
+      Metadados EXIF serão lidos quando possível.
     </p>
     <textarea id="url-input" placeholder="https://exemplo.com/foto1.jpg, https://drive.google.com/file/d/.../view"
       style="width:100%;height:120px;background:var(--bg3);border:1px solid var(--border2);
              color:var(--text);font-family:var(--mono);font-size:11px;padding:8px;
              resize:vertical;outline:none;line-height:1.6"></textarea>
     <p style="font-family:var(--ui);font-size:11px;color:var(--text-dim);margin-top:4px">
-      Cada URL gerará uma linha na tabela. Preencha nome e coordenadas depois,
-      ou use o botão ⊙ para selecionar o local no mapa.
+      Cada URL gerará uma linha. Coordenadas serão preenchidas automaticamente se houver EXIF.
     </p>`;
 
   modal('IMPORTAR IMAGENS POR URL', body, [
@@ -1198,22 +1245,8 @@ function promptImageURLs() {
         const urls = raw.split(/[\n,]+/).map(u => u.trim()).filter(u => u.length > 0);
         if (!urls.length) { closeModal(); return; }
 
-        let added = 0;
-        urls.forEach(url => {
-          const normalized = normalizeGDriveURL(url);
-          let nome = '';
-          try {
-            const pathname = new URL(normalized).pathname;
-            const parts = pathname.split('/').filter(Boolean);
-            nome = decodeURIComponent(parts[parts.length - 1] || '')
-              .replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ').trim();
-          } catch(_) {}
-          if (/^[a-zA-Z0-9_\-]{20,}$/.test(nome)) nome = '';
-          addRow({ nome, img: normalized });
-          added++;
-        });
         closeModal();
-        status(`${added} imagem(ns) por URL adicionada(s). Complete nome e coordenadas.`, 'ok');
+        processURLImports(urls);
     }},
     { label: 'Cancelar', cls: 'btn', cb: closeModal },
   ]);
@@ -1222,6 +1255,124 @@ function promptImageURLs() {
     const ta = document.getElementById('url-input');
     if (ta) ta.focus();
   });
+}
+
+async function processURLImports(urls) {
+  status(`Buscando ${urls.length} imagem(ns)...`, '');
+  let added = 0, withGPS = 0;
+  const results = [];
+
+  for (const url of urls) {
+    const normalized = normalizeGDriveURL(url);
+
+    // Tenta nome a partir da URL
+    let nome = '';
+    try {
+      const pathname = new URL(normalized).pathname;
+      const parts = pathname.split('/').filter(Boolean);
+      nome = decodeURIComponent(parts[parts.length - 1] || '')
+        .replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ').trim();
+      if (/^[a-zA-Z0-9_\-]{20,}$/.test(nome)) nome = '';
+    } catch(_) {}
+
+    let exif = null;
+
+    // Tenta buscar o binário para ler EXIF
+    try {
+      status(`Buscando EXIF: ${nome || normalized.slice(-30)}...`, '');
+      const resp = await fetch(normalized, { mode: 'cors' });
+      if (resp.ok) {
+        const buffer = await resp.arrayBuffer();
+
+        // XMP DJI
+        let xmpAzimute = null;
+        try {
+          const textView = new TextDecoder('utf-8', { fatal: false }).decode(
+            new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 2 * 1024 * 1024))
+          );
+          const xmpStart = textView.indexOf('http://ns.adobe.com/xap/1.0/');
+          if (xmpStart !== -1) {
+            const snippet = textView.slice(xmpStart, xmpStart + 8192);
+            const patterns = [
+              /drone-dji:GimbalYawDegree\s*=\s*"([+-]?\d+\.?\d*)"/i,
+              /drone-dji:GimbalYaw\s*=\s*"([+-]?\d+\.?\d*)"/i,
+              /drone-dji:FlightYawDegree\s*=\s*"([+-]?\d+\.?\d*)"/i,
+              /drone-dji:FlightYaw\s*=\s*"([+-]?\d+\.?\d*)"/i,
+            ];
+            for (const pat of patterns) {
+              const m = snippet.match(pat);
+              if (m) { xmpAzimute = parseFloat(m[1]); break; }
+            }
+          }
+        } catch(_) {}
+
+        // EXIF
+        try {
+          const binary = EXIF.readFromBinaryFile(buffer);
+          const fakeImg = { exifdata: binary || {}, _xmpAzimute: xmpAzimute };
+          exif = extractEXIF(fakeImg);
+        } catch(_) {}
+      }
+    } catch(e) {
+      // CORS bloqueado ou rede indisponível — continua sem EXIF
+      console.warn('fetch EXIF falhou para:', normalized, e.message);
+    }
+
+    results.push({ url: normalized, nome, exif });
+    added++;
+  }
+
+  // Adiciona linhas com dados preenchidos
+  results.forEach(r => {
+    const e = r.exif;
+    if (e && e.hasGPS) withGPS++;
+    addRow({
+      nome:    r.nome,
+      lat:     e?.latDec  || '',
+      lon:     e?.lonDec  || '',
+      alt:     e?.altFinal || '',
+      azimute: e?.azimute != null ? String(e.azimute) : '',
+      data:    e?.data    || '',
+      hora:    e?.hora    || '',
+      img:     r.url,
+    });
+  });
+
+  // Relatório no modal
+  const rows = results.map(r => {
+    const e = r.exif;
+    const gpsCell = e?.hasGPS
+      ? `<span style="color:var(--green)">✓</span> ${e.latDec}, ${e.lonDec}${e.altFinal ? ` · ${e.altFinal}m` : ''}${e.azimute != null ? ` · ${e.azimute}°` : ''}`
+      : (r.exif === null
+        ? `<span style="color:var(--amber)">CORS</span>`
+        : `<span style="color:var(--text-dim)">sem GPS</span>`);
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:5px 8px;font-family:var(--mono);font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.nome || r.url.slice(-40))}</td>
+      <td style="padding:5px 8px;font-family:var(--mono);font-size:10px">${gpsCell}</td>
+    </tr>`;
+  }).join('');
+
+  modal('URLs IMPORTADAS', `
+    <p style="font-family:var(--ui);font-size:12px;color:var(--text-dim);margin-bottom:10px">
+      ${added} URL(s) · <span style="color:var(--green)">${withGPS} com GPS</span> · ${added - withGPS} sem GPS
+    </p>
+    <div style="max-height:280px;overflow-y:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--text-dim);font-family:var(--ui)">
+          <th style="padding:4px 8px;text-align:left">Imagem</th>
+          <th style="padding:4px 8px;text-align:left">GPS / Alt / Az</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p style="font-family:var(--ui);font-size:11px;color:var(--amber);margin-top:8px">
+      ⚠ Links do Google Drive podem bloquear leitura EXIF por CORS.
+      Nesse caso, preencha coordenadas manualmente ou use ⊙.
+    </p>`,
+    [{ label: 'OK', cls: 'btn primary', cb: closeModal }]
+  );
+
+  status(`${added} URL(s) adicionada(s); ${withGPS} com GPS.`, withGPS ? 'ok' : 'warn');
 }
 
 function importCSV(event) {
@@ -1542,7 +1693,7 @@ function decToDMSRational(dec) {
 
 // Injeta GPS EXIF em um ArrayBuffer JPEG.
 // Retorna novo ArrayBuffer com os metadados, ou o original se algo falhar.
-function injectGPSExif(jpegBuffer, lat, lon, altM) {
+function injectGPSExif(jpegBuffer, lat, lon, altM, p_azimute) {
   try {
     const src = new Uint8Array(jpegBuffer);
 
@@ -1566,7 +1717,9 @@ function injectGPSExif(jpegBuffer, lat, lon, altM) {
     const altVal = hasAlt ? Math.round(Math.abs(parseFloat(altM)) * 100) : 0;
     const altRef = (hasAlt && parseFloat(altM) < 0) ? 1 : 0;
 
-    const numTags = hasAlt ? 6 : 4;
+    const hasAz  = p_azimute !== null && p_azimute !== undefined && !isNaN(parseFloat(p_azimute));
+    const azVal  = hasAz ? Math.round(Math.abs(parseFloat(p_azimute)) * 100) : 0;
+    const numTags = 4 + (hasAlt ? 2 : 0) + (hasAz ? 2 : 0);
 
     // Tamanho do IFD GPS:
     // 2 (count) + numTags*12 (entries) + 4 (next IFD offset)
@@ -1655,6 +1808,14 @@ function injectGPSExif(jpegBuffer, lat, lon, altM) {
       dataOffset += 8;
     }
 
+    if (hasAz) {
+      // GPSImgDirectionRef (tag 0x0010, ASCII, count 2 "T\0")
+      writeIFDEntry(0x0010, 2, 2, 0x54000000); // 'T' = True North
+      // GPSImgDirection (tag 0x0011, RATIONAL, count 1)
+      writeIFDEntry(0x0011, 5, 1, dataOffset);
+      dataOffset += 8;
+    }
+
     dv.setUint32(pos, 0, false); pos += 4; // next IFD = 0
 
     // ── Área de dados racionais ──
@@ -1671,6 +1832,11 @@ function injectGPSExif(jpegBuffer, lat, lon, altM) {
     if (hasAlt) {
       dv.setUint32(pos, altVal, false); pos += 4;
       dv.setUint32(pos, 100,    false); pos += 4;
+    }
+
+    if (hasAz) {
+      dv.setUint32(pos, azVal, false); pos += 4;
+      dv.setUint32(pos, 100,   false); pos += 4;
     }
 
     // ── Resto do JPEG original (sem o SOI que já copiamos) ──
@@ -2547,7 +2713,7 @@ async function generateZIP() {
       if (p) {
         const la = parseFloat(p.lat), lo = parseFloat(p.lon);
         if (!isNaN(la) && !isNaN(lo) && validateCoord(p.lat, p.lon)) {
-          buf = injectGPSExif(buf, la, lo, p.alt || null);
+          buf = injectGPSExif(buf, la, lo, p.alt || null, p.azimute || null);
         }
       }
 
