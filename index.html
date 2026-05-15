@@ -727,6 +727,48 @@ input[type=file] { display: none; }
   image-orientation: none;
 }
 
+/* ── DRAG REORDER ── */
+.cat-row.drag-over {
+  border-color: var(--green-dim);
+  background: var(--green-dark);
+}
+.cat-row[draggable="true"] {
+  cursor: grab;
+}
+.cat-row[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+/* ── DROP ZONE GLOBAL ── */
+#drop-overlay {
+  display: none;
+  position: fixed; inset: 0; z-index: 7000;
+  background: rgba(10,18,10,0.85);
+  border: 3px dashed var(--green-dim);
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: none;
+}
+#drop-overlay.active {
+  display: flex;
+  pointer-events: all;
+}
+#drop-overlay .drop-msg {
+  font-family: var(--ui);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--green);
+  text-shadow: 0 0 20px rgba(74,255,110,.5);
+}
+#drop-overlay .drop-sub {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 </style>
 </head>
 <body>
@@ -931,6 +973,12 @@ input[type=file] { display: none; }
     <div class="modal-body" id="modal-body"></div>
     <div class="modal-footer" id="modal-footer"></div>
   </div>
+</div>
+
+<!-- ══ DROP OVERLAY ══ -->
+<div id="drop-overlay">
+  <div class="drop-msg">↓ SOLTAR IMAGENS</div>
+  <div class="drop-sub">JPG · PNG · HEIC · qualquer imagem</div>
 </div>
 
 <script>
@@ -2135,7 +2183,11 @@ function renderCats() {
       ? (Object.keys(iconBlobStore).find(k => iconBlobStore[k] === c.icone) || 'ícone local')
       : '';
     return `
-    <div class="cat-row">
+    <div class="cat-row" draggable="true"
+      ondragstart="catDragStart(event,${i})"
+      ondragover="catDragOver(event)"
+      ondragleave="catDragLeave(event)"
+      ondrop="catDrop(event,${i})">
       <input value="${esc(c.nome)}" placeholder="Nome da categoria"
         onchange="updateCat(${i},'nome',this.value)">
       <div style="display:flex;gap:6px;align-items:center">
@@ -2178,6 +2230,46 @@ function renderCats() {
 
   document.getElementById('badge-cats').textContent = categories.length;
   document.getElementById('stat-cats').textContent = categories.length;
+}
+
+// ── REORDENAÇÃO DE CATEGORIAS POR DRAG-AND-DROP ──────────────────────────
+let catDragIdx = null;
+
+function catDragStart(event, i) {
+  catDragIdx = i;
+  event.dataTransfer.effectAllowed = 'move';
+}
+
+function catDragOver(event) {
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  event.currentTarget.classList.add('drag-over');
+}
+
+function catDragLeave(event) {
+  event.currentTarget.classList.remove('drag-over');
+}
+
+function catDrop(event, targetIdx) {
+  event.preventDefault();
+  event.currentTarget.classList.remove('drag-over');
+
+  if (catDragIdx === null || catDragIdx === targetIdx) return;
+
+  // Não permite mover "Sem Categoria" (índice 0) nem mover para o lugar dela
+  if (catDragIdx === 0 || targetIdx === 0) {
+    status('"Sem Categoria" não pode ser reordenada.', 'warn');
+    catDragIdx = null;
+    return;
+  }
+
+  // Reordena o array
+  const moved = categories.splice(catDragIdx, 1)[0];
+  categories.splice(targetIdx, 0, moved);
+
+  catDragIdx = null;
+  renderCats();
+  status('Categoria reordenada. A ordem afeta a autocategorização.', 'ok');
 }
 
 function updateCat(i, field, val) {
@@ -2973,6 +3065,48 @@ document.getElementById('modal-overlay').addEventListener('click', e => {
 renderCats();
 renderPointsTable();
 status('KYRON 93 pronto. Importe um CSV ou adicione pontos manualmente.', 'ok');
+
+// ── DRAG-AND-DROP GLOBAL DE IMAGENS ──────────────────────────────────────
+let dropCounter = 0; // controla enter/leave em elementos filhos
+
+document.addEventListener('dragenter', e => {
+  if (!e.dataTransfer.types.includes('Files')) return;
+  dropCounter++;
+  document.getElementById('drop-overlay').classList.add('active');
+});
+
+document.addEventListener('dragleave', e => {
+  if (!e.dataTransfer.types.includes('Files')) return;
+  dropCounter--;
+  if (dropCounter <= 0) {
+    dropCounter = 0;
+    document.getElementById('drop-overlay').classList.remove('active');
+  }
+});
+
+document.addEventListener('dragover', e => {
+  if (!e.dataTransfer.types.includes('Files')) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+
+document.addEventListener('drop', e => {
+  if (!e.dataTransfer.types.includes('Files')) return;
+  e.preventDefault();
+  dropCounter = 0;
+  document.getElementById('drop-overlay').classList.remove('active');
+
+  const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+  if (!files.length) {
+    status('Nenhuma imagem reconhecida no arquivo arrastado.', 'warn');
+    return;
+  }
+
+  // Reutiliza o pipeline EXIF existente simulando um evento de input
+  const fakeEvent = { target: { files, value: '' } };
+  importEXIF(fakeEvent);
+});
+
 </script>
 </body>
 </html>
